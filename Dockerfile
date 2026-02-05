@@ -8,23 +8,19 @@ WORKDIR /app
 # Copy manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy src for dependency caching
+# Create a dummy project to cache dependencies
 RUN mkdir src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "pub mod config; pub mod rpc; pub mod metrics; pub mod poller; pub mod logging;" > src/lib.rs && \
-    mkdir -p src/rpc && \
-    echo "pub mod client; pub mod types;" > src/rpc/mod.rs && \
-    touch src/config.rs src/metrics.rs src/poller.rs src/logging.rs src/rpc/client.rs src/rpc/types.rs
+    echo "fn main() { println!(\"placeholder\"); }" > src/main.rs
 
-# Build dependencies only (cached layer)
-RUN cargo build --release 2>/dev/null || true
+# Build dependencies only (this layer is cached if Cargo.toml/Cargo.lock don't change)
+RUN cargo build --release && \
+    rm -rf src target/release/deps/tvc_tracker* target/release/tvc_tracker*
 
 # Copy actual source code
 COPY src ./src
 
-# Touch files to invalidate cache and rebuild
-RUN touch src/main.rs && \
-    cargo build --release
+# Build the real application
+RUN cargo build --release
 
 # ===============================
 # Stage 2: Runtime
