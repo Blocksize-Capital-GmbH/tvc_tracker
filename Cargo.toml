@@ -23,6 +23,8 @@ prometheus = { version = "0.13", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
+# Pin time to version compatible with Rust 1.85 (0.3.46+ requires 1.88)
+time = ">=0.3.37, <0.3.46"
 
 [dev-dependencies]
 tokio-test = "0.4"
