@@ -1,15 +1,13 @@
-use tvc_tracker::rpc::client::HttpRpcClient;
 use tvc_tracker::config::Args;
 use tvc_tracker::logging::init_logging;
-use tvc_tracker::poller::run_poll;
 use tvc_tracker::metrics::metrics_handler;
+use tvc_tracker::poller::run_poll;
+use tvc_tracker::rpc::client::HttpRpcClient;
 
 use clap::Parser;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use std::time::{Duration};
-
-
+use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -41,11 +39,10 @@ async fn main() -> anyhow::Result<()> {
         .user_agent("tvc_tracker/0.1")
         .build()?;
 
-    let rpc = HttpRpcClient{
+    let rpc = HttpRpcClient {
         http,
         rpc_url: args.rpc_url.clone(),
     };
     run_poll(&rpc, &args, metrics.clone()).await?;
     Ok(())
 }
-

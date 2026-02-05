@@ -1,13 +1,13 @@
+use crate::config::Args;
+use crate::logging::append_log;
+use crate::metrics::{MAX_CREDITS_PER_SLOT, Metrics};
 use crate::rpc::client::RpcClient;
 use crate::rpc::types::VoteAccount;
-use crate::config::Args;
-use crate::metrics::{MAX_CREDITS_PER_SLOT, Metrics};
-use crate::logging::append_log;
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use tokio::time::sleep;
 
 #[derive(Debug, Clone)]
@@ -49,7 +49,6 @@ impl PollState {
         let next = self.backoff.saturating_mul(2);
         self.backoff = std::cmp::min(next, Duration::from_secs(600));
     }
-
 }
 
 pub async fn poll_once<C: RpcClient + Sync>(
@@ -58,16 +57,11 @@ pub async fn poll_once<C: RpcClient + Sync>(
     m: &std::sync::Arc<Metrics>,
     state: &mut PollState,
 ) -> Result<()> {
-
-    let epoch_info = rpc.get_epoch_info(
-            args.commitment
-        ).await?;
-    let acct = rpc.get_vote_account(
-            &args.vote_pubkey, 
-            args.commitment
-        ).await?;
+    let epoch_info = rpc.get_epoch_info(args.commitment).await?;
+    let acct = rpc
+        .get_vote_account(&args.vote_pubkey, args.commitment)
+        .await?;
     let cur = snapshot_from_vote_account(&acct)?;
-
 
     m.rpc_up.set(1);
     m.rpc_last_success.set(
@@ -135,20 +129,18 @@ pub async fn poll_once<C: RpcClient + Sync>(
         }
     }
 
-    let missed_5m =
-        window_delta(
-            &state.hist, 
-            now, 
-            Duration::from_secs(300), 
-            state.missed_total_acc
-        );
-    let missed_1h =
-        window_delta(
-            &state.hist, 
-            now, 
-            Duration::from_secs(3600), 
-            state.missed_total_acc
-        );
+    let missed_5m = window_delta(
+        &state.hist,
+        now,
+        Duration::from_secs(300),
+        state.missed_total_acc,
+    );
+    let missed_1h = window_delta(
+        &state.hist,
+        now,
+        Duration::from_secs(3600),
+        state.missed_total_acc,
+    );
 
     m.missed_5m.set(missed_5m as i64);
     m.missed_1h.set(missed_1h as i64);
@@ -162,15 +154,14 @@ pub async fn poll_once<C: RpcClient + Sync>(
     Ok(())
 }
 
-pub async fn run_poll<C :RpcClient + Sync>(
+pub async fn run_poll<C: RpcClient + Sync>(
     rpc: &C,
     args: &Args,
     m: std::sync::Arc<Metrics>,
 ) -> Result<()> {
-
     let mut state = PollState::new(args.interval_secs);
 
-    loop {   
+    loop {
         match poll_once(rpc, args, &m, &mut state).await {
             Ok(()) => {
                 state.on_success();
@@ -180,15 +171,13 @@ pub async fn run_poll<C :RpcClient + Sync>(
                 m.rpc_up.set(0);
                 m.rpc_errors.inc();
                 tracing::warn!("poll failed: {e:#}");
-                
+
                 state.on_error();
                 sleep(state.backoff).await;
             }
         } // match
     } //loop
 }
-
-
 
 fn snapshot_from_vote_account(acct: &VoteAccount) -> anyhow::Result<CreditsSnapshot> {
     let last = acct

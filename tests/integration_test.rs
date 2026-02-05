@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tvc_tracker::config::{Args, Commitment};
 use tvc_tracker::metrics::Metrics;
-use tvc_tracker::poller::{poll_once, PollState};
+use tvc_tracker::poller::{PollState, poll_once};
 use tvc_tracker::rpc::client::RpcClient;
 use tvc_tracker::rpc::types::{EpochInfo, VoteAccount};
 
@@ -91,7 +91,10 @@ async fn test_poll_once_records_metrics() {
     poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
 
     // Verify metrics were set
-    assert!(metrics.actual.get() > 0, "actual credits should be recorded");
+    assert!(
+        metrics.actual.get() > 0,
+        "actual credits should be recorded"
+    );
     assert_eq!(metrics.rpc_up.get(), 1, "rpc_up should be 1 after success");
     assert!(
         metrics.rpc_last_success.get() > 0,
@@ -165,8 +168,8 @@ async fn test_missed_credits_calculation() {
 #[tokio::test]
 async fn test_multiple_epoch_credits_tracking() {
     let epoch_credits = vec![
-        [98, 800_000, 700_000], // epoch 98: 100k credits
-        [99, 900_000, 800_000], // epoch 99: 100k credits
+        [98, 800_000, 700_000],  // epoch 98: 100k credits
+        [99, 900_000, 800_000],  // epoch 99: 100k credits
         [100, 950_000, 900_000], // epoch 100: 50k credits so far
     ];
 
@@ -267,7 +270,10 @@ fn test_metrics_render() {
         body.contains("solana_vote_credits_actual 95"),
         "Body should contain actual metric"
     );
-    assert!(body.contains("rpc_up 1"), "Body should contain rpc_up metric");
+    assert!(
+        body.contains("rpc_up 1"),
+        "Body should contain rpc_up metric"
+    );
 }
 
 #[test]

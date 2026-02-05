@@ -1,12 +1,12 @@
+use crate::poller::CreditsSnapshot;
+use std::time::Instant;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
-use std::time::{Instant};
-use crate::poller::{CreditsSnapshot};
 
 pub(crate) fn append_log(
-    prev: Option<(&CreditsSnapshot, Instant)>, 
-    cur: &CreditsSnapshot, 
-    now: Instant
+    prev: Option<(&CreditsSnapshot, Instant)>,
+    cur: &CreditsSnapshot,
+    now: Instant,
 ) {
     if let Some((p, t0)) = prev {
         let d_credits = cur.credits_total.saturating_sub(p.credits_total);
