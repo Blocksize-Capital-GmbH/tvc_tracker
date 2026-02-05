@@ -1,0 +1,60 @@
+services:
+  tvc-tracker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/blocksize-capital-gmbh/tvc_tracker:latest
+    container_name: tvc_tracker
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - RUST_LOG=info
+    volumes:
+      - ./logs:/app/logs
+    command:
+      - "--vote-pubkey=${VOTE_PUBKEY}"
+      - "--rpc-url=${RPC_URL:-https://api.mainnet.solana.com}"
+      - "--commitment=${COMMITMENT:-finalized}"
+      - "--interval-secs=${INTERVAL_SECS:-60}"
+      - "--metrics-port=${METRICS_PORT:-7999}"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${METRICS_PORT:-7999}/metrics"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Include Prometheus for local testing
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+
+  # Optional: Include Grafana for local testing
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+volumes:
+  prometheus_data:
+  grafana_data:

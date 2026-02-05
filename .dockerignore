@@ -1,0 +1,32 @@
+# Build artifacts
+target/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# CI/CD
+.github/
+
+# Documentation
+*.md
+!README.md
+
+# Development
+tests/
+.env
+.env.*
+
+# Coverage
+coverage/
+*.profraw

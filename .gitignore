@@ -1,2 +1,28 @@
+# Build artifacts
 /target
+
+# Logs
 /logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Coverage
+/coverage
+*.profraw
+*.profdata
+tarpaulin-report.html
+
+# OS
+.DS_Store
+Thumbs.db

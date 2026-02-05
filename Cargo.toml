@@ -1,6 +1,13 @@
 [package]
 name = "tvc_tracker"
+version = "0.1.0"
 edition = "2024"
+authors = ["Blocksize Capital <dev@blocksize-capital.com>"]
+description = "A Prometheus exporter for monitoring Solana validator Timely Vote Credits (TVC)"
+license = "MIT"
+repository = "https://github.com/Blocksize-Capital-GmbH/tvc_tracker"
+keywords = ["solana", "validator", "prometheus", "monitoring", "tvc"]
+categories = ["command-line-utilities", "development-tools::profiling"]
 
 [dependencies]
 anyhow = "1"
@@ -16,3 +23,6 @@ prometheus = "0.13"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
+
+[dev-dependencies]
+tokio-test = "0.4"

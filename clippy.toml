@@ -1,0 +1,8 @@
+# Clippy configuration
+# Allows for more specific lint configuration
+
+# Allow slightly longer functions in test code
+too-many-arguments-threshold = 8
+
+# Set the MSRV for compatibility lints
+msrv = "1.75"
