@@ -330,14 +330,213 @@ fn test_poll_state_history_window() {
 
     let now = Instant::now();
 
-    // Add some historical data points
-    state.hist.push_back((now - Duration::from_secs(4000), 100)); // > 1h ago
-    state.hist.push_back((now - Duration::from_secs(3500), 150)); // > 1h ago
-    state.hist.push_back((now - Duration::from_secs(3000), 200)); // within 1h
-    state.hist.push_back((now - Duration::from_secs(200), 250)); // within 5m
-    state.hist.push_back((now, 300)); // current
+    // Add some historical data points (timestamp, missed_acc, slot)
+    state
+        .hist
+        .push_back((now - Duration::from_secs(4000), 100, 1000)); // > 1h ago
+    state
+        .hist
+        .push_back((now - Duration::from_secs(3500), 150, 1500)); // > 1h ago
+    state
+        .hist
+        .push_back((now - Duration::from_secs(3000), 200, 2000)); // within 1h
+    state
+        .hist
+        .push_back((now - Duration::from_secs(200), 250, 2800)); // within 5m
+    state.hist.push_back((now, 300, 3000)); // current
 
     assert_eq!(state.hist.len(), 5, "History should have 5 entries");
 
     state.missed_total_acc = 300;
+}
+
+/// Mutable RPC client for epoch boundary testing (thread-safe)
+struct MutableTestRpc {
+    epoch_info: std::sync::RwLock<EpochInfo>,
+    vote_account: std::sync::RwLock<VoteAccount>,
+}
+
+impl MutableTestRpc {
+    fn new(epoch: u64, slot_index: u64, slots_in_epoch: u64, absolute_slot: u64) -> Self {
+        Self {
+            epoch_info: std::sync::RwLock::new(EpochInfo {
+                epoch,
+                slot_index,
+                slots_in_epoch,
+                absolute_slot,
+            }),
+            vote_account: std::sync::RwLock::new(VoteAccount {
+                vote_pubkey: "TestVotePubkey".to_string(),
+                node_pubkey: "TestNodePubkey".to_string(),
+                activated_stake: 1_000_000_000,
+                commission: 10,
+                epoch_credits: vec![[epoch, 100_000, 50_000]],
+                last_vote: absolute_slot,
+                root_slot: absolute_slot.saturating_sub(32),
+            }),
+        }
+    }
+
+    fn advance_epoch(&self, new_epoch: u64, new_slot_index: u64, new_absolute_slot: u64) {
+        let mut info = self.epoch_info.write().unwrap();
+        info.epoch = new_epoch;
+        info.slot_index = new_slot_index;
+        info.absolute_slot = new_absolute_slot;
+
+        let mut acct = self.vote_account.write().unwrap();
+        // Add previous epoch to epoch_credits and start new epoch
+        let prev_credits = acct.epoch_credits.last().map(|c| c[1]).unwrap_or(0);
+        acct.epoch_credits
+            .push([new_epoch, prev_credits + 1000, prev_credits]);
+        acct.root_slot = new_absolute_slot.saturating_sub(32);
+        acct.last_vote = new_absolute_slot;
+    }
+
+    fn add_credits(&self, additional: u64) {
+        let mut acct = self.vote_account.write().unwrap();
+        if let Some(last) = acct.epoch_credits.last_mut() {
+            last[1] += additional;
+        }
+    }
+
+    fn advance_slots(&self, slots: u64) {
+        let mut info = self.epoch_info.write().unwrap();
+        info.slot_index += slots;
+        info.absolute_slot += slots;
+
+        let mut acct = self.vote_account.write().unwrap();
+        acct.root_slot += slots;
+        acct.last_vote += slots;
+    }
+}
+
+impl RpcClient for MutableTestRpc {
+    fn rpc_url(&self) -> &str {
+        "http://test.local"
+    }
+
+    async fn get_epoch_info(&self, _commitment: Commitment) -> anyhow::Result<EpochInfo> {
+        Ok(self.epoch_info.read().unwrap().clone())
+    }
+
+    async fn get_vote_account(
+        &self,
+        _vote_pubkey: &str,
+        _commitment: Commitment,
+    ) -> anyhow::Result<VoteAccount> {
+        Ok(self.vote_account.read().unwrap().clone())
+    }
+}
+
+#[tokio::test]
+async fn test_epoch_boundary_resets_delta() {
+    // Start in epoch 100
+    let rpc = MutableTestRpc::new(100, 1000, 432_000, 43_201_000);
+
+    let args = test_args();
+    let metrics = Arc::new(Metrics::new().unwrap());
+    let mut state = PollState::new(60);
+
+    // First poll in epoch 100
+    poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
+    let first_missed = metrics.missed_current_epoch.get();
+    assert!(first_missed >= 0, "first poll should record missed credits");
+
+    // Advance slots and add some credits
+    rpc.advance_slots(100);
+    rpc.add_credits(1500);
+
+    // Second poll in same epoch - should calculate delta
+    poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
+    assert_eq!(
+        state.prev_epoch,
+        Some(100),
+        "prev_epoch should be set to 100"
+    );
+
+    // Advance to epoch 101
+    rpc.advance_epoch(101, 100, 43_632_100);
+
+    // Poll in new epoch - delta should be 0 (epoch boundary)
+    poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
+
+    assert_eq!(
+        state.prev_epoch,
+        Some(101),
+        "prev_epoch should update to 101"
+    );
+    // On epoch change, missed_since_last_poll should be 0
+    assert_eq!(
+        metrics.missed_since_last_poll.get(),
+        0,
+        "delta should be 0 at epoch boundary"
+    );
+}
+
+#[tokio::test]
+async fn test_window_metrics_accumulate_correctly() {
+    let rpc = MutableTestRpc::new(100, 1000, 432_000, 43_201_000);
+
+    let args = test_args();
+    let metrics = Arc::new(Metrics::new().unwrap());
+    let mut state = PollState::new(60);
+
+    // First poll
+    poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
+
+    // Simulate passage of time and missed credits
+    for i in 0..5 {
+        rpc.advance_slots(100);
+        // Don't add proportional credits, causing missed credits to accumulate
+        rpc.add_credits(800); // Less than expected (1600 for 100 slots)
+        poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
+
+        // After each poll, missed_total should be >= missed_1h >= missed_5m
+        let total = state.missed_total_acc;
+        let m1h = metrics.missed_1h.get() as u64;
+        let m5m = metrics.missed_5m.get() as u64;
+
+        assert!(
+            total >= m1h,
+            "iteration {}: total ({}) should be >= 1h ({})",
+            i,
+            total,
+            m1h
+        );
+        assert!(
+            m1h >= m5m,
+            "iteration {}: 1h ({}) should be >= 5m ({})",
+            i,
+            m1h,
+            m5m
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_missed_credits_1h_less_than_or_equal_total_after_warmup() {
+    let rpc = MutableTestRpc::new(100, 1000, 432_000, 43_201_000);
+
+    let args = test_args();
+    let metrics = Arc::new(Metrics::new().unwrap());
+    let mut state = PollState::new(60);
+
+    // Poll multiple times
+    for _ in 0..10 {
+        rpc.advance_slots(50);
+        poll_once(&rpc, &args, &metrics, &mut state).await.unwrap();
+    }
+
+    let total = state.missed_total_acc;
+    let m1h = metrics.missed_1h.get() as u64;
+    let m5m = metrics.missed_5m.get() as u64;
+
+    // When running less than 1 hour, 1h should equal total accumulated
+    assert_eq!(
+        total, m1h,
+        "When running < 1h, 1h window should equal total accumulated"
+    );
+
+    // 5m should be <= 1h
+    assert!(m5m <= m1h, "5m ({}) should be <= 1h ({})", m5m, m1h);
 }

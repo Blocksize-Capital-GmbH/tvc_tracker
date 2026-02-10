@@ -1,6 +1,8 @@
 use anyhow::Result;
 use axum::http::{HeaderMap, HeaderValue};
-use prometheus::{Encoder, IntCounter, IntGauge, Opts, Registry, TextEncoder};
+use prometheus::{
+    Encoder, Gauge, GaugeVec, IntCounter, IntGauge, IntGaugeVec, Opts, Registry, TextEncoder,
+};
 use std::sync::Arc;
 
 pub const MAX_CREDITS_PER_SLOT: u64 = 16;
@@ -15,7 +17,23 @@ pub struct Metrics {
     pub missed_since_last_poll: IntGauge,
     pub missed_5m: IntGauge,
     pub missed_1h: IntGauge,
+    pub missed_rate_5m: Gauge,
+    pub missed_rate_1h: Gauge,
+    pub vote_credits_efficiency_5m: Gauge,
+    pub vote_credits_efficiency_1h: Gauge,
+    pub vote_credits_efficiency_epoch: Gauge,
+    pub vote_credits_per_slot_5m: Gauge,
+    pub vote_credits_per_slot_1h: Gauge,
+    pub vote_credits_per_slot_epoch: Gauge,
+    pub vote_latency_slots_5m: Gauge,
+    pub vote_latency_slots_1h: Gauge,
+    pub vote_latency_slots_epoch: Gauge,
+    /// Histogram: vote count by credits earned (0-16) per window (5m, 1h, epoch)
+    pub vote_credits_histogram_count: IntGaugeVec,
+    /// Histogram: relative fraction by credits earned (0-16) per window
+    pub vote_credits_histogram_fraction: GaugeVec,
     pub missed_total: IntCounter,
+    pub projected_credits_epoch: IntGauge,
     pub rpc_up: IntGauge,
     pub rpc_errors: IntCounter,
     pub rpc_last_success: IntGauge,
@@ -57,12 +75,72 @@ impl Metrics {
 
         let missed_1h = IntGauge::with_opts(Opts::new(
             "missed_vote_credits_1h",
-            "Number of timely vote credits missed the past 5 minutes",
+            "Number of timely vote credits missed the past 1 hour",
+        ))?;
+
+        let missed_rate_5m = Gauge::with_opts(Opts::new(
+            "missed_vote_credits_rate_5m",
+            "Rate of missed vote credits per minute (5-minute average)",
+        ))?;
+
+        let missed_rate_1h = Gauge::with_opts(Opts::new(
+            "missed_vote_credits_rate_1h",
+            "Rate of missed vote credits per minute (1-hour average)",
+        ))?;
+
+        let vote_credits_efficiency_5m = Gauge::with_opts(Opts::new(
+            "solana_vote_credits_efficiency_5m",
+            "Fraction of max vote credits earned (5-minute window, 1.0 = 100%)",
+        ))?;
+
+        let vote_credits_efficiency_1h = Gauge::with_opts(Opts::new(
+            "solana_vote_credits_efficiency_1h",
+            "Fraction of max vote credits earned (1-hour window, 1.0 = 100%)",
+        ))?;
+
+        let vote_credits_efficiency_epoch = Gauge::with_opts(Opts::new(
+            "solana_vote_credits_efficiency_epoch",
+            "Fraction of max vote credits earned this epoch (actual/expected, 1.0 = 100%)",
+        ))?;
+
+        let vote_credits_per_slot_5m = Gauge::with_opts(Opts::new(
+            "solana_vote_credits_per_slot_5m",
+            "Average vote credits earned per slot (5-minute window, max 16)",
+        ))?;
+
+        let vote_credits_per_slot_1h = Gauge::with_opts(Opts::new(
+            "solana_vote_credits_per_slot_1h",
+            "Average vote credits earned per slot (1-hour window, max 16)",
+        ))?;
+
+        let vote_credits_per_slot_epoch = Gauge::with_opts(Opts::new(
+            "solana_vote_credits_per_slot_epoch",
+            "Average vote credits earned per slot this epoch (max 16)",
+        ))?;
+
+        let vote_latency_slots_5m = Gauge::with_opts(Opts::new(
+            "solana_vote_latency_slots_5m",
+            "Implied average vote latency in slots (5-minute window, 1 = fastest)",
+        ))?;
+
+        let vote_latency_slots_1h = Gauge::with_opts(Opts::new(
+            "solana_vote_latency_slots_1h",
+            "Implied average vote latency in slots (1-hour window, 1 = fastest)",
+        ))?;
+
+        let vote_latency_slots_epoch = Gauge::with_opts(Opts::new(
+            "solana_vote_latency_slots_epoch",
+            "Implied average vote latency in slots this epoch (1 = fastest)",
         ))?;
 
         let missed_total = IntCounter::with_opts(Opts::new(
             "missed_vote_credits_total",
             "Number of timely vote credits missed total",
+        ))?;
+
+        let projected_credits_epoch = IntGauge::with_opts(Opts::new(
+            "solana_vote_credits_projected_epoch",
+            "Projected total vote credits by the end of the epoch (based on current rate)",
         ))?;
 
         let rpc_up = IntGauge::with_opts(Opts::new(
@@ -80,6 +158,23 @@ impl Metrics {
             "Timestamp of the last successful RPC request.",
         ))?;
 
+        // Histogram metrics with labels: window (5m, 1h, epoch), credits (0-16)
+        let vote_credits_histogram_count = IntGaugeVec::new(
+            Opts::new(
+                "solana_vote_credits_histogram_count",
+                "Number of votes earning each credit value (0-16) per window",
+            ),
+            &["window", "credits"],
+        )?;
+
+        let vote_credits_histogram_fraction = GaugeVec::new(
+            Opts::new(
+                "solana_vote_credits_histogram_fraction",
+                "Fraction of votes earning each credit value (0-16) per window",
+            ),
+            &["window", "credits"],
+        )?;
+
         registry.register(Box::new(expected_max.clone()))?;
         registry.register(Box::new(actual.clone()))?;
         registry.register(Box::new(missed_current_epoch.clone()))?;
@@ -87,10 +182,24 @@ impl Metrics {
         registry.register(Box::new(missed_since_last_poll.clone()))?;
         registry.register(Box::new(missed_5m.clone()))?;
         registry.register(Box::new(missed_1h.clone()))?;
+        registry.register(Box::new(missed_rate_5m.clone()))?;
+        registry.register(Box::new(missed_rate_1h.clone()))?;
+        registry.register(Box::new(vote_credits_efficiency_5m.clone()))?;
+        registry.register(Box::new(vote_credits_efficiency_1h.clone()))?;
+        registry.register(Box::new(vote_credits_efficiency_epoch.clone()))?;
+        registry.register(Box::new(vote_credits_per_slot_5m.clone()))?;
+        registry.register(Box::new(vote_credits_per_slot_1h.clone()))?;
+        registry.register(Box::new(vote_credits_per_slot_epoch.clone()))?;
+        registry.register(Box::new(vote_latency_slots_5m.clone()))?;
+        registry.register(Box::new(vote_latency_slots_1h.clone()))?;
+        registry.register(Box::new(vote_latency_slots_epoch.clone()))?;
         registry.register(Box::new(missed_total.clone()))?;
+        registry.register(Box::new(projected_credits_epoch.clone()))?;
         registry.register(Box::new(rpc_up.clone()))?;
         registry.register(Box::new(rpc_errors.clone()))?;
         registry.register(Box::new(rpc_last_success.clone()))?;
+        registry.register(Box::new(vote_credits_histogram_count.clone()))?;
+        registry.register(Box::new(vote_credits_histogram_fraction.clone()))?;
 
         Ok(Self {
             registry,
@@ -101,7 +210,21 @@ impl Metrics {
             missed_since_last_poll,
             missed_5m,
             missed_1h,
+            missed_rate_5m,
+            missed_rate_1h,
+            vote_credits_efficiency_5m,
+            vote_credits_efficiency_1h,
+            vote_credits_efficiency_epoch,
+            vote_credits_per_slot_5m,
+            vote_credits_per_slot_1h,
+            vote_credits_per_slot_epoch,
+            vote_latency_slots_5m,
+            vote_latency_slots_1h,
+            vote_latency_slots_epoch,
+            vote_credits_histogram_count,
+            vote_credits_histogram_fraction,
             missed_total,
+            projected_credits_epoch,
             rpc_up,
             rpc_errors,
             rpc_last_success,
