@@ -137,15 +137,16 @@ impl VoteTracker {
         let now = Instant::now();
         let start = now - std::time::Duration::from_secs(window_secs);
 
-        // Find baseline (last entry before window start, or oldest)
+        // Find the last entry BEFORE the window start
+        // If no entry exists before the window, use zeros as baseline
+        // (meaning all our data is within the window, so return everything)
         let base = self
             .hist
             .iter()
             .rev()
             .find(|(t, _)| *t < start)
-            .or_else(|| self.hist.front())
             .map(|(_, h)| *h)
-            .unwrap_or([0; 17]);
+            .unwrap_or([0; 17]); // Use zeros if all data is within window
 
         // Calculate delta from baseline to current
         let mut result = [0u64; 17];
@@ -301,18 +302,18 @@ mod tests {
     fn test_window_histogram() {
         let mut tracker = VoteTracker::new();
 
-        // First update - establishes baseline in history
+        // First update
         let votes = vec![(1000, 1, Some(1))]; // 16 credits
         tracker.process_update(1000, &votes, Some(999), 100);
 
-        // Second update - adds more votes
+        // Second update
         let votes = vec![
             (1000, 2, Some(1)),
             (1001, 1, Some(2)), // 15 credits (new)
         ];
         tracker.process_update(1001, &votes, Some(1000), 100);
 
-        // Third update - adds another vote
+        // Third update
         let votes = vec![
             (1000, 3, Some(1)),
             (1001, 2, Some(2)),
@@ -324,14 +325,15 @@ mod tests {
         assert_eq!(tracker.cumulative_histogram[16], 2); // Two votes at 16 credits
         assert_eq!(tracker.cumulative_histogram[15], 1); // One vote at 15 credits
 
-        // For window histogram, since all entries are within 5min window,
-        // it uses the oldest entry as baseline. The delta from first entry
-        // (which had 1 vote at 16) to now (2 votes at 16, 1 at 15) should be:
-        // 16 credits: 2 - 1 = 1
-        // 15 credits: 1 - 0 = 1
+        // When all data is within the window (tracker just started),
+        // window_histogram should return the full cumulative histogram
+        // (uses zeros as baseline since no entry exists before window start)
         let hist = tracker.window_histogram(300); // 5 minute window
-        assert_eq!(hist[16], 1); // Delta since first entry
-        assert_eq!(hist[15], 1);
+        assert_eq!(hist[16], 2); // All votes at 16 credits
+        assert_eq!(hist[15], 1); // All votes at 15 credits
+
+        // Should match epoch histogram when running < 1 hour
+        assert_eq!(hist, tracker.epoch_histogram());
     }
 
     #[test]
@@ -395,5 +397,42 @@ mod tests {
         let result = tracker.process_update(1002, &votes, Some(1000), 100);
         assert_eq!(result.new_votes, 0);
         assert_eq!(tracker.cumulative_histogram[16], 2); // Still 2
+    }
+
+    #[test]
+    fn test_fresh_tracker_1h_equals_epoch() {
+        // When tracker is running < 1 hour, 1h and epoch windows should be identical
+        let mut tracker = VoteTracker::new();
+
+        // Add various votes with different credits
+        let votes: Vec<(u64, u32, Option<u32>)> = vec![
+            (1000, 1, Some(1)),  // 16 credits
+            (1001, 1, Some(2)),  // 15 credits
+            (1002, 1, Some(3)),  // 14 credits
+            (1003, 1, Some(16)), // 1 credit
+            (1004, 1, Some(17)), // 0 credits
+        ];
+        tracker.process_update(1004, &votes, Some(999), 100);
+
+        let hist_1h = tracker.window_histogram(3600);
+        let hist_epoch = tracker.epoch_histogram();
+
+        // All windows should be identical for fresh tracker
+        assert_eq!(
+            hist_1h, hist_epoch,
+            "1h and epoch should match on fresh tracker"
+        );
+        assert_eq!(
+            tracker.window_histogram(300),
+            hist_epoch,
+            "5m and epoch should match"
+        );
+
+        // Verify actual content
+        assert_eq!(hist_epoch[16], 1);
+        assert_eq!(hist_epoch[15], 1);
+        assert_eq!(hist_epoch[14], 1);
+        assert_eq!(hist_epoch[1], 1);
+        assert_eq!(hist_epoch[0], 1);
     }
 }
