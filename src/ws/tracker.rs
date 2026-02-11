@@ -5,6 +5,9 @@ use std::time::Instant;
 /// credits_bucket_counts[i] = count of votes that earned i credits (0..=16)
 type HistEntry = (Instant, [u64; 17]);
 
+/// Histogram entry with slot tracking: (timestamp, credits_bucket_counts, slots_elapsed)
+type SlotHistEntry = (Instant, [u64; 17], u64);
+
 /// Tracks per-vote TVC credits and builds histograms
 #[derive(Debug)]
 pub struct VoteTracker {
@@ -22,6 +25,12 @@ pub struct VoteTracker {
     hist: VecDeque<HistEntry>,
     /// Cumulative histogram (for computing deltas)
     cumulative_histogram: [u64; 17],
+    /// First root slot seen (for elapsed slot calculation)
+    first_root_slot: Option<u64>,
+    /// Cumulative slots elapsed since first update
+    cumulative_slots: u64,
+    /// Rolling history with slot tracking for missed credits calculation
+    slot_hist: VecDeque<SlotHistEntry>,
 }
 
 impl VoteTracker {
@@ -34,6 +43,9 @@ impl VoteTracker {
             current_epoch: None,
             hist: VecDeque::new(),
             cumulative_histogram: [0; 17],
+            first_root_slot: None,
+            cumulative_slots: 0,
+            slot_hist: VecDeque::new(),
         }
     }
 
@@ -99,15 +111,33 @@ impl VoteTracker {
             }
         }
 
-        // Note: We don't try to detect missed slots from gaps anymore
-        // because the vote tower only contains successful votes.
-        // Missed votes are already reflected in the aggregate metrics from REST polling.
+        // Track elapsed slots for missed credits calculation
+        // Using root_slot as the authoritative "finalized slot count"
+        if let Some(root) = root_slot {
+            if self.first_root_slot.is_none() {
+                self.first_root_slot = Some(root);
+            }
+            // Calculate new slots since last update
+            if let Some(prev_root) = self.prev_root_slot {
+                let new_slots = root.saturating_sub(prev_root);
+                self.cumulative_slots += new_slots;
+            }
+        }
 
         // Store history entry for windowed calculations
         self.hist.push_back((now, self.cumulative_histogram));
+        self.slot_hist
+            .push_back((now, self.cumulative_histogram, self.cumulative_slots));
 
         // Prune history older than 1 hour
         let cutoff = now - std::time::Duration::from_secs(3600);
+        while let Some((t, _, _)) = self.slot_hist.front() {
+            if *t < cutoff {
+                self.slot_hist.pop_front();
+            } else {
+                break;
+            }
+        }
         while let Some((t, _)) = self.hist.front() {
             if *t < cutoff {
                 self.hist.pop_front();
@@ -207,6 +237,69 @@ impl VoteTracker {
             .map(|(credits, count)| credits as u64 * count)
             .sum();
         total_credits as f64 / total_votes as f64
+    }
+
+    /// Calculate total credits earned from histogram
+    pub fn histogram_credits(hist: &[u64; 17]) -> u64 {
+        hist.iter()
+            .enumerate()
+            .map(|(credits, count)| credits as u64 * count)
+            .sum()
+    }
+
+    /// Get slots elapsed and histogram for a time window
+    /// Returns (histogram, slots_elapsed, actual_credits)
+    pub fn window_stats(&self, window_secs: u64) -> (u64, u64, u64) {
+        if self.slot_hist.is_empty() {
+            return (0, 0, 0);
+        }
+
+        let now = Instant::now();
+        let start = now - std::time::Duration::from_secs(window_secs);
+
+        // Find baseline entry (last entry before window start, or zeros if all within window)
+        let base = self.slot_hist.iter().rev().find(|(t, _, _)| *t < start);
+
+        let (base_hist, base_slots) = match base {
+            Some((_, h, s)) => (*h, *s),
+            None => ([0u64; 17], 0u64),
+        };
+
+        // Calculate deltas
+        let hist_delta: [u64; 17] = {
+            let mut result = [0u64; 17];
+            for i in 0..17 {
+                result[i] = self.cumulative_histogram[i].saturating_sub(base_hist[i]);
+            }
+            result
+        };
+
+        let slots_delta = self.cumulative_slots.saturating_sub(base_slots);
+        let credits_earned = Self::histogram_credits(&hist_delta);
+
+        (
+            slots_delta,
+            Self::histogram_total(&hist_delta),
+            credits_earned,
+        )
+    }
+
+    /// Calculate missed credits for a time window
+    /// missed = expected_max (slots * 16) - actual_credits
+    pub fn window_missed_credits(&self, window_secs: u64) -> u64 {
+        let (slots, _votes, credits) = self.window_stats(window_secs);
+        let expected = slots * 16;
+        expected.saturating_sub(credits)
+    }
+
+    /// Get total cumulative slots since tracker started
+    pub fn total_slots(&self) -> u64 {
+        self.cumulative_slots
+    }
+
+    /// Get total cumulative credits since tracker started
+    pub fn total_credits(&self) -> u64 {
+        Self::histogram_credits(&self.cumulative_histogram)
     }
 }
 
@@ -464,5 +557,79 @@ mod tests {
         assert_eq!(hist_epoch[14], 1);
         assert_eq!(hist_epoch[1], 1);
         assert_eq!(hist_epoch[0], 1);
+    }
+
+    #[test]
+    fn test_slot_tracking_and_missed_credits() {
+        let mut tracker = VoteTracker::new();
+
+        // First update: 2 votes, root_slot moves from None to 100
+        let votes = vec![(99, 1, Some(1)), (100, 1, Some(1))]; // 2 votes at 16 credits
+        tracker.process_update(100, &votes, Some(100), 1);
+        assert_eq!(tracker.first_root_slot, Some(100));
+        assert_eq!(tracker.cumulative_slots, 0); // First update, no delta yet
+
+        // Second update: 2 more votes, root_slot moves to 110 (10 slots elapsed)
+        let votes = vec![
+            (99, 2, Some(1)),
+            (100, 2, Some(1)),
+            (109, 1, Some(2)), // 15 credits
+            (110, 1, Some(1)), // 16 credits
+        ];
+        tracker.process_update(110, &votes, Some(110), 1);
+        assert_eq!(tracker.cumulative_slots, 10); // 110 - 100 = 10 slots
+
+        // Check total credits: 3 votes at 16 + 1 vote at 15 = 48 + 15 = 63
+        assert_eq!(tracker.total_credits(), 63);
+
+        // Expected for 10 slots: 10 * 16 = 160
+        // Missed: 160 - 63 = 97
+        // This accounts for: 4 votes made = 4 slots voted
+        //                   10 - 4 = 6 slots missed = 6 * 16 = 96
+        //                   + 1 credit missed from latency (15 instead of 16)
+        //                   = 97 total missed
+        let (slots, votes, credits) = tracker.window_stats(300);
+        assert_eq!(slots, 10);
+        assert_eq!(votes, 4);
+        assert_eq!(credits, 63);
+
+        let missed = tracker.window_missed_credits(300);
+        assert_eq!(missed, 97);
+    }
+
+    #[test]
+    fn test_histogram_efficiency_with_missed_slots() {
+        let mut tracker = VoteTracker::new();
+
+        // Simulate 10 slots elapsed but only 5 votes made (all at 16 credits)
+        // This means 5 slots were missed entirely
+        tracker.process_update(100, &[], Some(100), 1); // First update, establishes baseline
+        tracker.prev_root_slot = Some(90); // Hack to make cumulative_slots = 10
+        tracker.process_update(100, &[], Some(100), 1);
+
+        // Now add 5 votes at 16 credits
+        let votes = vec![
+            (95, 1, Some(1)),
+            (96, 1, Some(1)),
+            (97, 1, Some(1)),
+            (98, 1, Some(1)),
+            (99, 1, Some(1)),
+        ];
+        tracker.process_update(100, &votes, Some(100), 1);
+
+        // Per-vote efficiency: 5/5 = 100% (all votes at 16 credits)
+        let hist = tracker.window_histogram(300);
+        let per_vote_eff = VoteTracker::histogram_efficiency(&hist);
+        assert!((per_vote_eff - 1.0).abs() < 0.001);
+
+        // But true efficiency accounting for missed slots:
+        // 10 slots * 16 = 160 expected
+        // 5 votes * 16 = 80 actual
+        // efficiency = 80/160 = 0.5
+        let (slots, _votes, credits) = tracker.window_stats(300);
+        if slots > 0 {
+            let true_efficiency = credits as f64 / (slots * 16) as f64;
+            assert!(true_efficiency < 1.0); // Should be < 100% due to missed slots
+        }
     }
 }

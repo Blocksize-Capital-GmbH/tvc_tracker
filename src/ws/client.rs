@@ -229,22 +229,53 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
             .set(frac_epoch[credits as usize]);
     }
 
-    // Update efficiency metrics from histogram (more accurate than epoch-level polling)
-    // Only update if we have data in the window
-    if VoteTracker::histogram_total(&hist_5m) > 0 {
-        let eff_5m = VoteTracker::histogram_efficiency(&hist_5m);
-        let avg_5m = VoteTracker::histogram_avg_credits(&hist_5m);
-        metrics.vote_credits_efficiency_5m.set(eff_5m);
-        metrics.vote_credits_per_slot_5m.set(avg_5m);
-        metrics.vote_latency_slots_5m.set(17.0 - avg_5m);
+    // Update efficiency and missed credits from slot-aware tracking
+    // This provides consistency between histogram and missed_vote_credits metrics
+    let (slots_5m, votes_5m, credits_5m) = tracker.window_stats(300);
+    let (slots_1h, votes_1h, credits_1h) = tracker.window_stats(3600);
+
+    if slots_5m > 0 {
+        let expected_5m = slots_5m * 16;
+        let missed_5m = expected_5m.saturating_sub(credits_5m);
+        let efficiency_5m = credits_5m as f64 / expected_5m as f64;
+        let avg_credits_5m = if votes_5m > 0 {
+            credits_5m as f64 / votes_5m as f64
+        } else {
+            0.0
+        };
+
+        metrics.missed_5m.set(missed_5m as i64);
+        metrics.vote_credits_efficiency_5m.set(efficiency_5m);
+        metrics.vote_credits_per_slot_5m.set(avg_credits_5m);
+        metrics.vote_latency_slots_5m.set(17.0 - avg_credits_5m);
+
+        // Calculate rate per minute
+        let minutes_5m = 5.0f64.min(slots_5m as f64 / 150.0); // ~150 slots/min
+        if minutes_5m > 0.0 {
+            metrics.missed_rate_5m.set(missed_5m as f64 / minutes_5m);
+        }
     }
 
-    if VoteTracker::histogram_total(&hist_1h) > 0 {
-        let eff_1h = VoteTracker::histogram_efficiency(&hist_1h);
-        let avg_1h = VoteTracker::histogram_avg_credits(&hist_1h);
-        metrics.vote_credits_efficiency_1h.set(eff_1h);
-        metrics.vote_credits_per_slot_1h.set(avg_1h);
-        metrics.vote_latency_slots_1h.set(17.0 - avg_1h);
+    if slots_1h > 0 {
+        let expected_1h = slots_1h * 16;
+        let missed_1h = expected_1h.saturating_sub(credits_1h);
+        let efficiency_1h = credits_1h as f64 / expected_1h as f64;
+        let avg_credits_1h = if votes_1h > 0 {
+            credits_1h as f64 / votes_1h as f64
+        } else {
+            0.0
+        };
+
+        metrics.missed_1h.set(missed_1h as i64);
+        metrics.vote_credits_efficiency_1h.set(efficiency_1h);
+        metrics.vote_credits_per_slot_1h.set(avg_credits_1h);
+        metrics.vote_latency_slots_1h.set(17.0 - avg_credits_1h);
+
+        // Calculate rate per minute
+        let minutes_1h = 60.0f64.min(slots_1h as f64 / 150.0);
+        if minutes_1h > 0.0 {
+            metrics.missed_rate_1h.set(missed_1h as f64 / minutes_1h);
+        }
     }
 
     // Note: epoch metrics from histogram only reflect time since tracker started
