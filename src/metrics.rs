@@ -10,6 +10,10 @@ pub const MAX_CREDITS_PER_SLOT: u64 = 16;
 #[derive(Clone)]
 pub struct Metrics {
     pub registry: Registry,
+    // Epoch info
+    pub epoch: IntGauge,
+    pub slot_index: IntGauge,
+    // Credits
     pub expected_max: IntGauge,
     pub actual: IntGauge,
     pub missed_current_epoch: IntGauge,
@@ -42,6 +46,16 @@ pub struct Metrics {
 impl Metrics {
     pub fn new() -> Result<Self> {
         let registry = Registry::new();
+
+        let epoch = IntGauge::with_opts(Opts::new(
+            "solana_epoch",
+            "Current epoch number (derived from root slot)",
+        ))?;
+
+        let slot_index = IntGauge::with_opts(Opts::new(
+            "solana_slot_index",
+            "Current slot index within the epoch (0 to 431999)",
+        ))?;
 
         let expected_max = IntGauge::with_opts(Opts::new(
             "solana_vote_credits_expected_max",
@@ -175,6 +189,8 @@ impl Metrics {
             &["window", "credits"],
         )?;
 
+        registry.register(Box::new(epoch.clone()))?;
+        registry.register(Box::new(slot_index.clone()))?;
         registry.register(Box::new(expected_max.clone()))?;
         registry.register(Box::new(actual.clone()))?;
         registry.register(Box::new(missed_current_epoch.clone()))?;
@@ -203,6 +219,8 @@ impl Metrics {
 
         Ok(Self {
             registry,
+            epoch,
+            slot_index,
             expected_max,
             actual,
             missed_current_epoch,

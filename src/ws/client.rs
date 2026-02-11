@@ -149,25 +149,17 @@ async fn process_notification(
         .map(|v| (v.slot, v.confirmation_count, v.latency))
         .collect();
 
-    // Get current epoch info from epochCredits
+    // Get credits earned THIS epoch from epochCredits
+    // The tracker derives epoch from root_slot, so we don't need to pass it
     let current_epoch_entry = vote_info.epoch_credits.last();
-    let current_epoch = current_epoch_entry.map(|ec| ec.epoch).unwrap_or(0);
-
-    // Get credits earned THIS epoch (credits - previous_credits)
     let epoch_credits = current_epoch_entry
         .map(|ec| ec.credits.saturating_sub(ec.previous_credits))
         .unwrap_or(0);
 
-    // Process the update
+    // Process the update - epoch is derived from root_slot internally
     let result = {
         let mut tracker = tracker.write().await;
-        tracker.process_update(
-            context_slot,
-            &votes,
-            vote_info.root_slot,
-            current_epoch,
-            epoch_credits,
-        )
+        tracker.process_update(context_slot, &votes, vote_info.root_slot, epoch_credits)
     };
 
     // Update metrics
@@ -244,23 +236,27 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
 
     // Update missed_vote_credits from WebSocket tracking
     // This uses epoch_credits as source of truth for consistency
+    let missed_epoch = tracker.epoch_missed();
     metrics.missed_5m.set(missed_5m as i64);
     metrics.missed_1h.set(missed_1h as i64);
+    metrics.missed_current_epoch.set(missed_epoch as i64);
 
-    // Calculate efficiency: (total_slots * 16 - missed) / (total_slots * 16)
-    // Total votes = histogram total, expected_credits = total_votes * 16
+    // Calculate totals and credits from histograms
     let total_votes_5m = VoteTracker::histogram_total(&hist_5m);
     let total_votes_1h = VoteTracker::histogram_total(&hist_1h);
+    let total_votes_epoch = VoteTracker::histogram_total(&hist_epoch);
 
-    // For efficiency, we need expected_max which includes missed slots
-    // expected_credits = histogram_credits + missed_credits
-    // efficiency = histogram_credits / expected_credits
     let hist_credits_5m = VoteTracker::histogram_credits(&hist_5m);
     let hist_credits_1h = VoteTracker::histogram_credits(&hist_1h);
+    let hist_credits_epoch = VoteTracker::histogram_credits(&hist_epoch);
 
+    // For efficiency: expected_credits = histogram_credits + missed_credits
+    // efficiency = histogram_credits / expected_credits
     let expected_5m = hist_credits_5m + missed_5m;
     let expected_1h = hist_credits_1h + missed_1h;
+    let expected_epoch = hist_credits_epoch + missed_epoch;
 
+    // 5-minute metrics
     if expected_5m > 0 {
         let eff_5m = hist_credits_5m as f64 / expected_5m as f64;
         let avg_credits_5m = if total_votes_5m > 0 {
@@ -270,9 +266,10 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
         };
         metrics.vote_credits_efficiency_5m.set(eff_5m);
         metrics.vote_credits_per_slot_5m.set(avg_credits_5m);
-        metrics.vote_latency_slots_5m.set(17.0 - avg_credits_5m);
+        metrics.vote_latency_slots_5m.set(16.0 - avg_credits_5m);
     }
 
+    // 1-hour metrics
     if expected_1h > 0 {
         let eff_1h = hist_credits_1h as f64 / expected_1h as f64;
         let avg_credits_1h = if total_votes_1h > 0 {
@@ -282,6 +279,37 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
         };
         metrics.vote_credits_efficiency_1h.set(eff_1h);
         metrics.vote_credits_per_slot_1h.set(avg_credits_1h);
-        metrics.vote_latency_slots_1h.set(17.0 - avg_credits_1h);
+        metrics.vote_latency_slots_1h.set(16.0 - avg_credits_1h);
+    }
+
+    // Epoch metrics (now from WebSocket, not HTTP)
+    if expected_epoch > 0 {
+        let eff_epoch = hist_credits_epoch as f64 / expected_epoch as f64;
+        let avg_credits_epoch = if total_votes_epoch > 0 {
+            hist_credits_epoch as f64 / total_votes_epoch as f64
+        } else {
+            0.0
+        };
+        metrics.vote_credits_efficiency_epoch.set(eff_epoch);
+        metrics.vote_credits_per_slot_epoch.set(avg_credits_epoch);
+        metrics
+            .vote_latency_slots_epoch
+            .set(16.0 - avg_credits_epoch);
+    }
+
+    // Set epoch info metrics
+    if let Some(epoch_info) = tracker.epoch_info() {
+        metrics.epoch.set(epoch_info.epoch as i64);
+        metrics.slot_index.set(epoch_info.slot_index as i64);
+        metrics.actual.set(hist_credits_epoch as i64);
+        metrics.expected_max.set(expected_epoch as i64);
+
+        // Projected credits = (actual_credits / slots_tracked) * slots_in_epoch
+        let slots_tracked = epoch_info.slot_index.saturating_add(1);
+        if slots_tracked > 0 {
+            let rate = hist_credits_epoch as f64 / slots_tracked as f64;
+            let projected = (rate * epoch_info.slots_in_epoch as f64) as i64;
+            metrics.projected_credits_epoch.set(projected);
+        }
     }
 }
