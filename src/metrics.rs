@@ -16,6 +16,8 @@ pub struct Metrics {
     // Credits
     pub expected_max: IntGauge,
     pub actual: IntGauge,
+    /// Total epoch credits from vote account (matches `solana vote-account` output)
+    pub total_epoch_credits: IntGauge,
     pub missed_current_epoch: IntGauge,
     pub missed_last_epoch: IntGauge,
     pub missed_since_last_poll: IntGauge,
@@ -65,6 +67,11 @@ impl Metrics {
         let actual = IntGauge::with_opts(Opts::new(
             "solana_vote_credits_actual",
             "Actual vote credits earned so far this epoch (from vote account epochCredits)",
+        ))?;
+
+        let total_epoch_credits = IntGauge::with_opts(Opts::new(
+            "solana_vote_credits_total_epoch",
+            "Total vote credits this epoch from vote account (matches `solana vote-account` output)",
         ))?;
 
         let missed_current_epoch = IntGauge::with_opts(Opts::new(
@@ -193,6 +200,7 @@ impl Metrics {
         registry.register(Box::new(slot_index.clone()))?;
         registry.register(Box::new(expected_max.clone()))?;
         registry.register(Box::new(actual.clone()))?;
+        registry.register(Box::new(total_epoch_credits.clone()))?;
         registry.register(Box::new(missed_current_epoch.clone()))?;
         registry.register(Box::new(missed_last_epoch.clone()))?;
         registry.register(Box::new(missed_since_last_poll.clone()))?;
@@ -223,6 +231,7 @@ impl Metrics {
             slot_index,
             expected_max,
             actual,
+            total_epoch_credits,
             missed_current_epoch,
             missed_last_epoch,
             missed_since_last_poll,

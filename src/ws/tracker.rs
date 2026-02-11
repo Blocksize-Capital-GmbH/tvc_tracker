@@ -74,10 +74,14 @@ pub struct VoteTracker {
     cumulative_missed: u64,
     /// Missed credits this epoch
     epoch_missed: u64,
-    /// Actual credits earned this epoch (from epoch_credits)
+    /// Actual credits earned since tracker started this epoch (from deltas)
     epoch_actual_credits: u64,
     /// First root_slot seen this epoch (for expected calculation)
     epoch_first_root_slot: Option<u64>,
+    /// Total vote credits this epoch from vote account (raw value, not delta)
+    total_epoch_credits: u64,
+    /// Number of slots we've actually tracked (for projection)
+    slots_tracked: u64,
 }
 
 impl VoteTracker {
@@ -94,7 +98,19 @@ impl VoteTracker {
             epoch_missed: 0,
             epoch_actual_credits: 0,
             epoch_first_root_slot: None,
+            total_epoch_credits: 0,
+            slots_tracked: 0,
         }
+    }
+
+    /// Get total epoch credits from vote account (raw value, matches `solana vote-account`)
+    pub fn total_epoch_credits(&self) -> u64 {
+        self.total_epoch_credits
+    }
+
+    /// Get number of slots actually tracked (for projection calculations)
+    pub fn slots_tracked(&self) -> u64 {
+        self.slots_tracked
     }
 
     /// Get current epoch info (if available)
@@ -130,7 +146,8 @@ impl VoteTracker {
     /// from the difference between expected and actual credits.
     ///
     /// `votes` is a slice of (slot, confirmation_count, latency) tuples
-    /// `epoch_credits` is the current cumulative epoch credits from the vote account
+    /// `epoch_credits_delta` is the credits earned THIS epoch (credits - previous_credits)
+    /// `total_epoch_credits` is the raw credits value from epochCredits (matches `solana vote-account`)
     ///
     /// Epoch info is derived directly from root_slot - NO HTTP required.
     pub fn process_update(
@@ -138,7 +155,8 @@ impl VoteTracker {
         context_slot: u64,
         votes: &[(u64, u32, Option<u32>)], // (slot, confirmation_count, latency)
         root_slot: Option<u64>,
-        epoch_credits: u64, // Current cumulative epoch credits
+        epoch_credits_delta: u64, // Credits earned THIS epoch (credits - previous_credits)
+        total_epoch_credits: u64, // Raw credits from epochCredits (matches vote-account)
     ) -> UpdateResult {
         let now = Instant::now();
 
@@ -157,12 +175,16 @@ impl VoteTracker {
             self.prev_epoch_credits = None;
             self.prev_root_slot = None;
             self.epoch_first_root_slot = root_slot;
+            self.slots_tracked = 0;
         }
 
         // Track first root slot of this epoch for expected calculation
         if self.epoch_first_root_slot.is_none() {
             self.epoch_first_root_slot = root_slot;
         }
+
+        // Update total epoch credits (raw value from vote account)
+        self.total_epoch_credits = total_epoch_credits;
 
         self.epoch_info = current_epoch_info;
 
@@ -209,13 +231,16 @@ impl VoteTracker {
             if curr_root > prev_root {
                 let slots_rooted = curr_root - prev_root;
                 let expected_credits = slots_rooted * MAX_CREDITS_PER_SLOT;
-                let actual_delta = epoch_credits.saturating_sub(prev_credits);
+                let actual_delta = epoch_credits_delta.saturating_sub(prev_credits);
                 missed_this_update = expected_credits.saturating_sub(actual_delta);
 
                 // Add missed credits to cumulative total
                 self.cumulative_missed += missed_this_update;
                 self.epoch_missed += missed_this_update;
                 self.epoch_actual_credits += actual_delta;
+
+                // Track slots for projection calculations
+                self.slots_tracked += slots_rooted;
             }
         }
 
@@ -236,7 +261,7 @@ impl VoteTracker {
         // Update state
         self.prev_votes = current_votes;
         self.prev_root_slot = root_slot;
-        self.prev_epoch_credits = Some(epoch_credits);
+        self.prev_epoch_credits = Some(epoch_credits_delta);
 
         UpdateResult {
             new_votes: new_votes.len() as u64,
@@ -359,9 +384,10 @@ impl VoteTracker {
         total_credits as f64 / total_votes as f64
     }
 
-    /// Calculate average latency from histogram (16 - avg_credits)
+    /// Calculate average latency from histogram (17 - avg_credits)
+    /// Latency 1 = 16 credits (fastest), Latency 17 = 0 credits (slowest)
     pub fn histogram_avg_latency(hist: &[u64; 17]) -> f64 {
-        MAX_CREDITS_PER_SLOT as f64 - Self::histogram_avg_credits(hist)
+        (MAX_CREDITS_PER_SLOT as f64 + 1.0) - Self::histogram_avg_credits(hist)
     }
 
     /// Get total credits for a time window (from histogram)
@@ -432,10 +458,17 @@ pub struct UpdateResult {
 mod tests {
     use super::*;
 
-    // Helper: simulate epoch_credits as cumulative based on votes relative to epoch start
-    // For testing with slots in same epoch
-    fn sim_epoch_credits(root_slot: u64, epoch_start: u64) -> u64 {
+    // Helper: simulate epoch_credits delta (credits earned this epoch)
+    fn sim_epoch_credits_delta(root_slot: u64, epoch_start: u64) -> u64 {
         (root_slot.saturating_sub(epoch_start) + 1) * MAX_CREDITS_PER_SLOT
+    }
+
+    // Helper: simulate total epoch credits (raw value, includes previous epochs for realism)
+    fn sim_total_epoch_credits(root_slot: u64, epoch_start: u64) -> u64 {
+        // Simulate that total credits = delta + some base from previous epochs
+        let delta = sim_epoch_credits_delta(root_slot, epoch_start);
+        // For testing, just use delta (no previous credits)
+        delta
     }
 
     // ============ EpochInfo Tests ============
@@ -516,7 +549,8 @@ mod tests {
             epoch_start + 1000,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
         assert_eq!(result.new_votes, 1);
         assert_eq!(result.update_histogram[16], 1); // latency=1 → 16 credits
@@ -530,7 +564,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 1000),
-            sim_epoch_credits(epoch_start + 1000, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1000, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1000, epoch_start),
         );
         assert_eq!(result.new_votes, 1);
         assert_eq!(result.update_histogram[15], 1); // 15 credits
@@ -545,7 +580,8 @@ mod tests {
             epoch_start + 1002,
             &votes,
             Some(epoch_start + 1001),
-            sim_epoch_credits(epoch_start + 1001, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1001, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1001, epoch_start),
         );
         assert_eq!(result.new_votes, 1);
         assert_eq!(result.update_histogram[14], 1); // latency=3 → 14 credits
@@ -562,7 +598,8 @@ mod tests {
             epoch_start + 1000,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
         assert_eq!(result.new_votes, 1);
         assert_eq!(result.update_histogram[16], 1); // gap=0 → 16 credits
@@ -573,7 +610,8 @@ mod tests {
             epoch_start + 1003,
             &votes,
             Some(epoch_start + 1000),
-            sim_epoch_credits(epoch_start + 1000, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1000, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1000, epoch_start),
         );
         assert_eq!(result.new_votes, 1);
         assert_eq!(result.update_histogram[14], 1); // gap=2 → 14 credits
@@ -591,7 +629,8 @@ mod tests {
             epoch1_start + 1000,
             &votes,
             Some(epoch1_start + 999),
-            sim_epoch_credits(epoch1_start + 999, epoch1_start),
+            sim_epoch_credits_delta(epoch1_start + 999, epoch1_start),
+            sim_total_epoch_credits(epoch1_start + 999, epoch1_start),
         );
 
         let votes = vec![
@@ -602,7 +641,8 @@ mod tests {
             epoch1_start + 1001,
             &votes,
             Some(epoch1_start + 1000),
-            sim_epoch_credits(epoch1_start + 1000, epoch1_start),
+            sim_epoch_credits_delta(epoch1_start + 1000, epoch1_start),
+            sim_total_epoch_credits(epoch1_start + 1000, epoch1_start),
         );
 
         let count_before = tracker.epoch_histogram.iter().sum::<u64>();
@@ -615,7 +655,8 @@ mod tests {
             epoch2_start + 1,
             &votes,
             Some(epoch2_start), // First slot of new epoch
-            16,                 // New epoch, credits start fresh
+            16,                 // New epoch, credits start fresh (delta)
+            16,                 // Total epoch credits
         );
 
         // Epoch histogram should only contain the new vote
@@ -668,7 +709,8 @@ mod tests {
             epoch_start + 1000,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
 
         // Second update
@@ -680,7 +722,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 1000),
-            sim_epoch_credits(epoch_start + 1000, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1000, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1000, epoch_start),
         );
 
         // Third update
@@ -693,7 +736,8 @@ mod tests {
             epoch_start + 1002,
             &votes,
             Some(epoch_start + 1001),
-            sim_epoch_credits(epoch_start + 1001, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1001, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1001, epoch_start),
         );
 
         // Check cumulative histogram
@@ -718,7 +762,8 @@ mod tests {
             epoch_start + 1000,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
         assert_eq!(result.update_histogram[0], 1);
 
@@ -731,7 +776,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 1000),
-            sim_epoch_credits(epoch_start + 1000, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1000, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1000, epoch_start),
         );
         assert_eq!(result.update_histogram[16], 1);
 
@@ -742,7 +788,8 @@ mod tests {
             epoch_start + 2000,
             &votes,
             Some(epoch_start + 1999),
-            sim_epoch_credits(epoch_start + 1999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1999, epoch_start),
         );
         assert_eq!(result.update_histogram[0], 1);
     }
@@ -758,7 +805,8 @@ mod tests {
             epoch_start + 1000,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
         assert_eq!(tracker.cumulative_histogram[16], 1);
 
@@ -771,7 +819,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 1000),
-            sim_epoch_credits(epoch_start + 1000, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1000, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1000, epoch_start),
         );
         assert_eq!(tracker.cumulative_histogram[16], 2);
 
@@ -785,7 +834,8 @@ mod tests {
             epoch_start + 1002,
             &votes,
             Some(epoch_start + 1001),
-            sim_epoch_credits(epoch_start + 1001, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1001, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1001, epoch_start),
         );
         assert_eq!(tracker.cumulative_histogram[16], 3);
 
@@ -809,7 +859,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
         assert_eq!(tracker.cumulative_histogram[16], 2);
 
@@ -822,7 +873,8 @@ mod tests {
             epoch_start + 1002,
             &votes,
             Some(epoch_start + 1000),
-            sim_epoch_credits(epoch_start + 1000, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 1000, epoch_start),
+            sim_total_epoch_credits(epoch_start + 1000, epoch_start),
         );
         assert_eq!(result.new_votes, 0);
         assert_eq!(tracker.cumulative_histogram[16], 2); // Still 2
@@ -844,7 +896,8 @@ mod tests {
             epoch_start + 1004,
             &votes,
             Some(epoch_start + 999),
-            sim_epoch_credits(epoch_start + 999, epoch_start),
+            sim_epoch_credits_delta(epoch_start + 999, epoch_start),
+            sim_total_epoch_credits(epoch_start + 999, epoch_start),
         );
 
         let hist_1h = tracker.window_histogram(3600);
@@ -878,7 +931,8 @@ mod tests {
             epoch_start + 1000,
             &votes,
             Some(epoch_start + 999),
-            16, // 1 slot = 16 credits (relative to epoch start tracking)
+            16,  // Delta: 1 slot = 16 credits
+            100, // Total epoch credits (arbitrary base)
         );
         assert_eq!(result.missed_credits, 0); // First update, no previous to compare
 
@@ -891,7 +945,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 1000),
-            32, // 2 slots total = 32 credits
+            32,  // Delta: 2 slots total = 32 credits
+            116, // Total epoch credits
         );
         assert_eq!(result.missed_credits, 0); // Perfect voting
 
@@ -905,7 +960,8 @@ mod tests {
             epoch_start + 1002,
             &votes,
             Some(epoch_start + 1002),
-            48, // 3 slots = 48 credits, but only 16 delta
+            48,  // Delta: 3 slots = 48 credits, but only 16 delta from last
+            132, // Total epoch credits
         );
         // Expected: (1002 - 1000) * 16 = 32 credits expected, but delta = 48 - 32 = 16 earned
         // Missed = 32 - 16 = 16
@@ -923,7 +979,13 @@ mod tests {
 
         // Establish baseline
         let votes = vec![(epoch_start + 1000, 1, Some(1))];
-        tracker.process_update(epoch_start + 1000, &votes, Some(epoch_start + 999), 16);
+        tracker.process_update(
+            epoch_start + 1000,
+            &votes,
+            Some(epoch_start + 999),
+            16,  // Delta
+            100, // Total
+        );
 
         // Add some missed credits
         let votes = vec![
@@ -934,7 +996,8 @@ mod tests {
             epoch_start + 1001,
             &votes,
             Some(epoch_start + 1001),
-            24, // 2 slots expected 32, got 24-16=8, missed 24
+            24,  // Delta: 2 slots expected 32, got 24-16=8, missed 24
+            108, // Total
         );
         // prev_root = 999, curr_root = 1001
         // slots_rooted = 1001 - 999 = 2
@@ -960,9 +1023,9 @@ mod tests {
         // Simulate 100 slots with mixed voting performance
         for i in 0..100 {
             let root = epoch_start + i;
-            let credits = if i % 3 == 0 {
+            let credits_delta = if i % 3 == 0 {
                 // Every 3rd slot: only 8 credits (half performance)
-                (i + 1) * 8 + (100 - i - 1) * 0 // Simplified
+                (i + 1) * 8
             } else {
                 // Full credits
                 (i + 1) * 16
@@ -970,7 +1033,13 @@ mod tests {
 
             let latency = if i % 3 == 0 { Some(9) } else { Some(1) }; // 8 or 16 credits
             let votes = vec![(epoch_start + i, 1, latency)];
-            tracker.process_update(epoch_start + i, &votes, Some(root), credits as u64);
+            tracker.process_update(
+                epoch_start + i,
+                &votes,
+                Some(root),
+                credits_delta as u64,        // Delta
+                1000 + credits_delta as u64, // Total
+            );
         }
 
         // Verify window consistency
@@ -997,7 +1066,8 @@ mod tests {
                 epoch_start + i,
                 &votes,
                 Some(epoch_start + i),
-                (i + 1) * 16, // Perfect credits
+                (i + 1) * 16,        // Delta: Perfect credits
+                1000 + (i + 1) * 16, // Total
             );
         }
 
@@ -1033,7 +1103,8 @@ mod tests {
             epoch_start + 4,
             &votes,
             Some(epoch_start + 4),
-            49, // 16 + 14 + 12 + 7 = 49
+            49,   // Delta: 16 + 14 + 12 + 7 = 49
+            1049, // Total
         );
 
         let hist = tracker.window_histogram(300);
