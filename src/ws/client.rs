@@ -37,9 +37,12 @@ pub async fn run_vote_subscription(
         match subscribe_loop(&ws_url, vote_pubkey, &metrics, &tracker).await {
             Ok(()) => {
                 warn!("WebSocket connection closed normally, reconnecting...");
+                metrics.ws_connected.set(0);
             }
             Err(e) => {
                 error!("WebSocket error: {:#}, reconnecting in 5s...", e);
+                metrics.ws_connected.set(0);
+                metrics.ws_errors.inc();
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -57,6 +60,7 @@ async fn subscribe_loop(
         .context("Failed to connect to WebSocket")?;
 
     info!("WebSocket connected");
+    metrics.ws_connected.set(1);
 
     let (mut write, mut read) = ws_stream.split();
 
@@ -95,6 +99,13 @@ async fn subscribe_loop(
                 Ok(WsMessage::Notification { params, .. }) => {
                     if let Err(e) = process_notification(&params, metrics, tracker).await {
                         warn!("Error processing notification: {:#}", e);
+                    } else {
+                        // Update last successful message timestamp
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs() as i64;
+                        metrics.ws_last_message.set(now);
                     }
                 }
                 Ok(WsMessage::Error { error, .. }) => {
@@ -259,6 +270,10 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
     let expected_1h = hist_credits_1h + missed_1h;
     let expected_epoch = hist_credits_epoch + missed_epoch;
 
+    // Get epoch info for projections
+    let epoch_info = tracker.epoch_info();
+    let slots_in_epoch = epoch_info.map(|e| e.slots_in_epoch).unwrap_or(432_000);
+
     // 5-minute metrics
     if expected_5m > 0 {
         let eff_5m = hist_credits_5m as f64 / expected_5m as f64;
@@ -272,6 +287,10 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
         // Latency: credits = 17 - latency, so latency = 17 - credits
         // Latency 1 = 16 credits (fastest), Latency 17 = 0 credits
         metrics.vote_latency_slots_5m.set(17.0 - avg_credits_5m);
+
+        // Projected credits at epoch end based on 5m rate
+        let projected_5m = (avg_credits_5m * slots_in_epoch as f64) as i64;
+        metrics.projected_credits_5m.set(projected_5m);
     }
 
     // 1-hour metrics
@@ -285,6 +304,10 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
         metrics.vote_credits_efficiency_1h.set(eff_1h);
         metrics.vote_credits_per_slot_1h.set(avg_credits_1h);
         metrics.vote_latency_slots_1h.set(17.0 - avg_credits_1h);
+
+        // Projected credits at epoch end based on 1h rate
+        let projected_1h = (avg_credits_1h * slots_in_epoch as f64) as i64;
+        metrics.projected_credits_1h.set(projected_1h);
     }
 
     // Epoch metrics (now from WebSocket, not HTTP)

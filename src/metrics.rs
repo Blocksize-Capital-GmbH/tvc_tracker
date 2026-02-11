@@ -42,11 +42,15 @@ pub struct Metrics {
     pub vote_latency_slots_5m: Gauge,
     pub vote_latency_slots_1h: Gauge,
     pub vote_latency_slots_epoch: Gauge,
+    /// Projected credits at epoch end based on 5-minute rate
+    pub projected_credits_5m: IntGauge,
+    /// Projected credits at epoch end based on 1-hour rate
+    pub projected_credits_1h: IntGauge,
 
-    // === RPC Health ===
-    pub rpc_up: IntGauge,
-    pub rpc_errors: IntCounter,
-    pub rpc_last_success: IntGauge,
+    // === WebSocket Health ===
+    pub ws_connected: IntGauge,
+    pub ws_errors: IntCounter,
+    pub ws_last_message: IntGauge,
 
     // === Histograms (detailed per-vote data) ===
     /// Histogram: vote count by credits earned (0-16) per window (5m, 1h, epoch)
@@ -171,22 +175,32 @@ impl Metrics {
 
         let projected_credits_epoch = IntGauge::with_opts(Opts::new(
             "solana_vote_credits_projected_epoch",
-            "Projected total vote credits by the end of the epoch (based on current rate)",
+            "Projected vote credits at epoch end (based on epoch-to-date rate)",
         ))?;
 
-        let rpc_up = IntGauge::with_opts(Opts::new(
-            "rpc_up",
-            "Is 0 when the RPC is unavailable and 1 if it's available.",
+        let projected_credits_5m = IntGauge::with_opts(Opts::new(
+            "solana_vote_credits_projected_5m",
+            "Projected vote credits at epoch end (based on 5-minute rate)",
         ))?;
 
-        let rpc_errors = IntCounter::with_opts(Opts::new(
-            "rpc_errors",
-            "Counts the number of RPC request errors.",
+        let projected_credits_1h = IntGauge::with_opts(Opts::new(
+            "solana_vote_credits_projected_1h",
+            "Projected vote credits at epoch end (based on 1-hour rate)",
         ))?;
 
-        let rpc_last_success = IntGauge::with_opts(Opts::new(
-            "rpc_last_success",
-            "Timestamp of the last successful RPC request.",
+        let ws_connected = IntGauge::with_opts(Opts::new(
+            "ws_connected",
+            "1 if WebSocket is connected, 0 otherwise",
+        ))?;
+
+        let ws_errors = IntCounter::with_opts(Opts::new(
+            "ws_errors",
+            "Number of WebSocket connection/message errors",
+        ))?;
+
+        let ws_last_message = IntGauge::with_opts(Opts::new(
+            "ws_last_message",
+            "Unix timestamp of last successful WebSocket message",
         ))?;
 
         // Histogram metrics with labels: window (5m, 1h, epoch), credits (0-16)
@@ -229,9 +243,11 @@ impl Metrics {
         registry.register(Box::new(vote_latency_slots_epoch.clone()))?;
         registry.register(Box::new(missed_total.clone()))?;
         registry.register(Box::new(projected_credits_epoch.clone()))?;
-        registry.register(Box::new(rpc_up.clone()))?;
-        registry.register(Box::new(rpc_errors.clone()))?;
-        registry.register(Box::new(rpc_last_success.clone()))?;
+        registry.register(Box::new(projected_credits_5m.clone()))?;
+        registry.register(Box::new(projected_credits_1h.clone()))?;
+        registry.register(Box::new(ws_connected.clone()))?;
+        registry.register(Box::new(ws_errors.clone()))?;
+        registry.register(Box::new(ws_last_message.clone()))?;
         registry.register(Box::new(vote_credits_histogram_count.clone()))?;
         registry.register(Box::new(vote_credits_histogram_fraction.clone()))?;
 
@@ -264,10 +280,12 @@ impl Metrics {
             vote_latency_slots_5m,
             vote_latency_slots_1h,
             vote_latency_slots_epoch,
-            // RPC health
-            rpc_up,
-            rpc_errors,
-            rpc_last_success,
+            projected_credits_5m,
+            projected_credits_1h,
+            // WebSocket health
+            ws_connected,
+            ws_errors,
+            ws_last_message,
             // Histograms (at bottom)
             vote_credits_histogram_count,
             vote_credits_histogram_fraction,

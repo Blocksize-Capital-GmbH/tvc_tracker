@@ -68,8 +68,10 @@ pub async fn poll_once<C: RpcClient + Sync>(
         .await?;
     let cur = snapshot_from_vote_account(&acct)?;
 
-    m.rpc_up.set(1);
-    m.rpc_last_success.set(
+    // Note: HTTP poller is deprecated - WebSocket is now the primary data source
+    // These ws_ metrics are shared between both, set them here for backwards compatibility
+    m.ws_connected.set(1);
+    m.ws_last_message.set(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -261,8 +263,8 @@ pub async fn run_poll<C: RpcClient + Sync>(
                 sleep(state.base_interval).await;
             } // OK
             Err(e) => {
-                m.rpc_up.set(0);
-                m.rpc_errors.inc();
+                m.ws_connected.set(0);
+                m.ws_errors.inc();
                 tracing::warn!("poll failed: {e:#}");
 
                 state.on_error();

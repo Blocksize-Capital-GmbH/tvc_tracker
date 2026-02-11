@@ -95,10 +95,14 @@ async fn test_poll_once_records_metrics() {
         metrics.actual.get() > 0,
         "actual credits should be recorded"
     );
-    assert_eq!(metrics.rpc_up.get(), 1, "rpc_up should be 1 after success");
+    assert_eq!(
+        metrics.ws_connected.get(),
+        1,
+        "ws_connected should be 1 after success"
+    );
     assert!(
-        metrics.rpc_last_success.get() > 0,
-        "rpc_last_success should be set"
+        metrics.ws_last_message.get() > 0,
+        "ws_last_message should be set"
     );
 }
 
@@ -240,7 +244,7 @@ fn test_metrics_creation() {
     assert_eq!(m.missed_since_last_poll.get(), 0);
     assert_eq!(m.missed_5m.get(), 0);
     assert_eq!(m.missed_1h.get(), 0);
-    assert_eq!(m.rpc_up.get(), 0);
+    assert_eq!(m.ws_connected.get(), 0);
 }
 
 #[test]
@@ -248,7 +252,7 @@ fn test_metrics_render() {
     let metrics = Metrics::new().unwrap();
     metrics.expected_max.set(100);
     metrics.actual.set(95);
-    metrics.rpc_up.set(1);
+    metrics.ws_connected.set(1);
 
     let (headers, body) = metrics.render();
 
@@ -271,8 +275,8 @@ fn test_metrics_render() {
         "Body should contain actual metric"
     );
     assert!(
-        body.contains("rpc_up 1"),
-        "Body should contain rpc_up metric"
+        body.contains("ws_connected 1"),
+        "Body should contain ws_connected metric"
     );
 }
 
