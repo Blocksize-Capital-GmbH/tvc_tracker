@@ -215,15 +215,17 @@ pub async fn poll_once<C: RpcClient + Sync>(
     let latency_1h = (17.0 - credits_per_slot_1h).clamp(1.0, 17.0);
     let latency_epoch = (17.0 - credits_per_slot_epoch).clamp(1.0, 17.0);
 
-    // Calculate projected credits for the epoch
-    // Based on actual credits earned per rooted slot, extrapolated to full epoch
-    // Use rooted_slots_elapsed (not slot_index) because credits are earned on rooted slots
-    let credits_per_slot = if rooted_slots_elapsed > 0 {
-        credits_this_epoch as f64 / rooted_slots_elapsed as f64
-    } else {
-        0.0
-    };
-    let projected_credits = (credits_per_slot * epoch_info.slots_in_epoch as f64) as i64;
+    // Maximum possible credits this epoch (slots_in_epoch × 16)
+    let epoch_max = epoch_info.slots_in_epoch * 16;
+
+    // Calculate projected credits: actual + (remaining_slots × rate)
+    let remaining_slots = epoch_info
+        .slots_in_epoch
+        .saturating_sub(rooted_slots_elapsed);
+    let projected_5m =
+        credits_this_epoch as i64 + (credits_per_slot_5m * remaining_slots as f64) as i64;
+    let projected_1h =
+        credits_this_epoch as i64 + (credits_per_slot_1h * remaining_slots as f64) as i64;
 
     m.missed_5m.set(stats_5m.missed as i64);
     m.missed_1h.set(stats_1h.missed as i64);
@@ -241,7 +243,9 @@ pub async fn poll_once<C: RpcClient + Sync>(
     m.expected_max.set(expected_max_rooted as i64);
     m.actual.set(cur.credits_this_epoch as i64);
     m.missed_current_epoch.set(missed_now as i64);
-    m.projected_credits_epoch.set(projected_credits);
+    m.epoch_expected_max.set(epoch_max as i64);
+    m.projected_credits_5m.set(projected_5m);
+    m.projected_credits_1h.set(projected_1h);
 
     append_log(state.prev.as_ref().map(|(s, t)| (s, *t)), &cur, now);
     state.prev = Some((cur, now));

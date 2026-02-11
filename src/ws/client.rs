@@ -161,7 +161,6 @@ async fn process_notification(
         .collect();
 
     // Get credits info from epochCredits
-    // The tracker derives epoch from root_slot, so we don't need to pass it
     let current_epoch_entry = vote_info.epoch_credits.last();
 
     // Credits earned THIS epoch = credits - previous_credits
@@ -170,10 +169,19 @@ async fn process_notification(
         .map(|ec| ec.credits.saturating_sub(ec.previous_credits))
         .unwrap_or(0);
 
-    // Process the update - epoch is derived from root_slot internally
+    // Get epoch directly from epochCredits (more accurate than calculating from root_slot)
+    let epoch = current_epoch_entry.map(|ec| ec.epoch);
+
+    // Process the update
     let result = {
         let mut tracker = tracker.write().await;
-        tracker.process_update(context_slot, &votes, vote_info.root_slot, epoch_credits)
+        tracker.process_update(
+            context_slot,
+            &votes,
+            vote_info.root_slot,
+            epoch_credits,
+            epoch,
+        )
     };
 
     // Update metrics
@@ -273,42 +281,51 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
     // Get epoch info for projections
     let epoch_info = tracker.epoch_info();
     let slots_in_epoch = epoch_info.map(|e| e.slots_in_epoch).unwrap_or(432_000);
+    let current_epoch_credits = tracker.current_epoch_credits();
+
+    // Calculate remaining slots in epoch
+    let slots_elapsed = epoch_info.map(|e| e.slot_index + 1).unwrap_or(1);
+    let remaining_slots = slots_in_epoch.saturating_sub(slots_elapsed);
 
     // 5-minute metrics
+    let avg_credits_5m = if total_votes_5m > 0 {
+        hist_credits_5m as f64 / total_votes_5m as f64
+    } else {
+        0.0
+    };
+
     if expected_5m > 0 {
         let eff_5m = hist_credits_5m as f64 / expected_5m as f64;
-        let avg_credits_5m = if total_votes_5m > 0 {
-            hist_credits_5m as f64 / total_votes_5m as f64
-        } else {
-            0.0
-        };
         metrics.vote_credits_efficiency_5m.set(eff_5m);
         metrics.vote_credits_per_slot_5m.set(avg_credits_5m);
         // Latency: credits = 17 - latency, so latency = 17 - credits
         // Latency 1 = 16 credits (fastest), Latency 17 = 0 credits
         metrics.vote_latency_slots_5m.set(17.0 - avg_credits_5m);
-
-        // Projected credits at epoch end based on 5m rate
-        let projected_5m = (avg_credits_5m * slots_in_epoch as f64) as i64;
-        metrics.projected_credits_5m.set(projected_5m);
     }
 
+    // Projected credits at epoch end: actual + (remaining_slots × 5m_rate)
+    let projected_5m =
+        current_epoch_credits as i64 + (avg_credits_5m * remaining_slots as f64) as i64;
+    metrics.projected_credits_5m.set(projected_5m);
+
     // 1-hour metrics
+    let avg_credits_1h = if total_votes_1h > 0 {
+        hist_credits_1h as f64 / total_votes_1h as f64
+    } else {
+        0.0
+    };
+
     if expected_1h > 0 {
         let eff_1h = hist_credits_1h as f64 / expected_1h as f64;
-        let avg_credits_1h = if total_votes_1h > 0 {
-            hist_credits_1h as f64 / total_votes_1h as f64
-        } else {
-            0.0
-        };
         metrics.vote_credits_efficiency_1h.set(eff_1h);
         metrics.vote_credits_per_slot_1h.set(avg_credits_1h);
         metrics.vote_latency_slots_1h.set(17.0 - avg_credits_1h);
-
-        // Projected credits at epoch end based on 1h rate
-        let projected_1h = (avg_credits_1h * slots_in_epoch as f64) as i64;
-        metrics.projected_credits_1h.set(projected_1h);
     }
+
+    // Projected credits at epoch end: actual + (remaining_slots × 1h_rate)
+    let projected_1h =
+        current_epoch_credits as i64 + (avg_credits_1h * remaining_slots as f64) as i64;
+    metrics.projected_credits_1h.set(projected_1h);
 
     // Epoch metrics (now from WebSocket, not HTTP)
     if expected_epoch > 0 {
@@ -332,21 +349,16 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
 
         // Current epoch credits from vote account (credits - previous_credits)
         // This matches what `solana vote-account` shows for the current epoch
-        let current_epoch_credits = tracker.current_epoch_credits();
         metrics
             .total_epoch_credits
             .set(current_epoch_credits as i64);
 
-        // Actual and expected from our tracking
+        // Maximum possible credits this epoch (slots_in_epoch × 16)
+        let epoch_max = epoch_info.slots_in_epoch * 16;
+        metrics.epoch_expected_max.set(epoch_max as i64);
+
+        // Actual and expected from our tracking (since tracker started)
         metrics.actual.set(hist_credits_epoch as i64);
         metrics.expected_max.set(expected_epoch as i64);
-
-        // Projected credits: rate = current_credits / slots_elapsed, projected = rate * slots_per_epoch
-        let slots_in_epoch_so_far = epoch_info.slot_index.saturating_add(1);
-        if slots_in_epoch_so_far > 0 {
-            let rate = current_epoch_credits as f64 / slots_in_epoch_so_far as f64;
-            let projected = (rate * epoch_info.slots_in_epoch as f64) as i64;
-            metrics.projected_credits_epoch.set(projected);
-        }
     }
 }

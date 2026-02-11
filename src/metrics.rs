@@ -18,9 +18,19 @@ pub struct Metrics {
     // === Credits (Current Epoch) ===
     /// Total epoch credits from vote account (credits - previous_credits, matches `solana vote-account`)
     pub total_epoch_credits: IntGauge,
+    /// Maximum possible credits this epoch (slots_in_epoch × 16)
+    pub epoch_expected_max: IntGauge,
     pub expected_max: IntGauge,
     pub actual: IntGauge,
-    pub projected_credits_epoch: IntGauge,
+    /// Projected credits at epoch end: actual + (remaining_slots × 5m_rate)
+    pub projected_credits_5m: IntGauge,
+    /// Projected credits at epoch end: actual + (remaining_slots × 1h_rate)
+    pub projected_credits_1h: IntGauge,
+
+    // === WebSocket Health ===
+    pub ws_connected: IntGauge,
+    pub ws_errors: IntCounter,
+    pub ws_last_message: IntGauge,
 
     // === Missed Credits ===
     pub missed_current_epoch: IntGauge,
@@ -42,15 +52,6 @@ pub struct Metrics {
     pub vote_latency_slots_5m: Gauge,
     pub vote_latency_slots_1h: Gauge,
     pub vote_latency_slots_epoch: Gauge,
-    /// Projected credits at epoch end based on 5-minute rate
-    pub projected_credits_5m: IntGauge,
-    /// Projected credits at epoch end based on 1-hour rate
-    pub projected_credits_1h: IntGauge,
-
-    // === WebSocket Health ===
-    pub ws_connected: IntGauge,
-    pub ws_errors: IntCounter,
-    pub ws_last_message: IntGauge,
 
     // === Histograms (detailed per-vote data) ===
     /// Histogram: vote count by credits earned (0-16) per window (5m, 1h, epoch)
@@ -173,19 +174,19 @@ impl Metrics {
             "Number of timely vote credits missed total",
         ))?;
 
-        let projected_credits_epoch = IntGauge::with_opts(Opts::new(
-            "solana_vote_credits_projected_epoch",
-            "Projected vote credits at epoch end (based on epoch-to-date rate)",
+        let epoch_expected_max = IntGauge::with_opts(Opts::new(
+            "solana_vote_credits_epoch_expected_max",
+            "Maximum possible vote credits this epoch (slots_in_epoch × 16)",
         ))?;
 
         let projected_credits_5m = IntGauge::with_opts(Opts::new(
             "solana_vote_credits_projected_5m",
-            "Projected vote credits at epoch end (based on 5-minute rate)",
+            "Projected credits at epoch end: actual + (remaining_slots × 5m_rate)",
         ))?;
 
         let projected_credits_1h = IntGauge::with_opts(Opts::new(
             "solana_vote_credits_projected_1h",
-            "Projected vote credits at epoch end (based on 1-hour rate)",
+            "Projected credits at epoch end: actual + (remaining_slots × 1h_rate)",
         ))?;
 
         let ws_connected = IntGauge::with_opts(Opts::new(
@@ -225,6 +226,12 @@ impl Metrics {
         registry.register(Box::new(expected_max.clone()))?;
         registry.register(Box::new(actual.clone()))?;
         registry.register(Box::new(total_epoch_credits.clone()))?;
+        registry.register(Box::new(epoch_expected_max.clone()))?;
+        registry.register(Box::new(projected_credits_5m.clone()))?;
+        registry.register(Box::new(projected_credits_1h.clone()))?;
+        registry.register(Box::new(ws_connected.clone()))?;
+        registry.register(Box::new(ws_errors.clone()))?;
+        registry.register(Box::new(ws_last_message.clone()))?;
         registry.register(Box::new(missed_current_epoch.clone()))?;
         registry.register(Box::new(missed_last_epoch.clone()))?;
         registry.register(Box::new(missed_since_last_poll.clone()))?;
@@ -242,12 +249,6 @@ impl Metrics {
         registry.register(Box::new(vote_latency_slots_1h.clone()))?;
         registry.register(Box::new(vote_latency_slots_epoch.clone()))?;
         registry.register(Box::new(missed_total.clone()))?;
-        registry.register(Box::new(projected_credits_epoch.clone()))?;
-        registry.register(Box::new(projected_credits_5m.clone()))?;
-        registry.register(Box::new(projected_credits_1h.clone()))?;
-        registry.register(Box::new(ws_connected.clone()))?;
-        registry.register(Box::new(ws_errors.clone()))?;
-        registry.register(Box::new(ws_last_message.clone()))?;
         registry.register(Box::new(vote_credits_histogram_count.clone()))?;
         registry.register(Box::new(vote_credits_histogram_fraction.clone()))?;
 
@@ -260,7 +261,13 @@ impl Metrics {
             total_epoch_credits,
             expected_max,
             actual,
-            projected_credits_epoch,
+            epoch_expected_max,
+            projected_credits_5m,
+            projected_credits_1h,
+            // WebSocket health
+            ws_connected,
+            ws_errors,
+            ws_last_message,
             // Missed credits
             missed_current_epoch,
             missed_last_epoch,
@@ -280,12 +287,7 @@ impl Metrics {
             vote_latency_slots_5m,
             vote_latency_slots_1h,
             vote_latency_slots_epoch,
-            projected_credits_5m,
-            projected_credits_1h,
-            // WebSocket health
-            ws_connected,
-            ws_errors,
-            ws_last_message,
+
             // Histograms (at bottom)
             vote_credits_histogram_count,
             vote_credits_histogram_fraction,
