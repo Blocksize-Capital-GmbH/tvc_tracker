@@ -1,5 +1,4 @@
-use clap::{Parser, ValueEnum};
-use serde::Serialize;
+use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
@@ -8,17 +7,9 @@ pub struct Args {
     #[arg(long)]
     pub vote_pubkey: String,
 
-    /// HTTP RPC URL (public endpoints are rate-limited)
+    /// RPC URL (WebSocket will be derived automatically: https:// -> wss://)
     #[arg(long, default_value = "https://api.mainnet.solana.com")]
     pub rpc_url: String,
-
-    /// Commitment: finalized is closest to "rooted" accounting
-    #[arg(long, default_value = "finalized")]
-    pub commitment: Commitment,
-
-    /// Poll interval seconds (poll mode)
-    #[arg(long, default_value_t = 60)]
-    pub interval_secs: u64,
 
     /// Directory to write logs to
     #[arg(long, default_value = "logs")]
@@ -27,14 +18,6 @@ pub struct Args {
     /// Port to serve metrics on
     #[arg(long, default_value_t = 7999)]
     pub metrics_port: u16,
-}
-
-#[derive(Copy, Clone, Debug, ValueEnum, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Commitment {
-    Processed,
-    Confirmed,
-    Finalized,
 }
 
 impl Args {

@@ -353,12 +353,8 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
             .total_epoch_credits
             .set(current_epoch_credits as i64);
 
-        // Maximum possible credits this epoch (slots_in_epoch × 16)
-        let epoch_max = epoch_info.slots_in_epoch * 16;
-        metrics.epoch_expected_max.set(epoch_max as i64);
-
-        // Actual and expected from our tracking (since tracker started)
-        metrics.actual.set(hist_credits_epoch as i64);
-        metrics.expected_max.set(expected_epoch as i64);
+        // Maximum possible credits at current slot = (slot_index + 1) × 16
+        let epoch_max_at_slot = (epoch_info.slot_index + 1) * 16;
+        metrics.epoch_expected_max.set(epoch_max_at_slot as i64);
     }
 }
