@@ -44,20 +44,20 @@ cargo build --release
 
 ## Metrics
 
-### Aggregate Metrics (REST Polling)
+All metrics are derived from a real-time WebSocket subscription to the vote account (`accountSubscribe` with `finalized` commitment). Epoch info is calculated directly from slot numbers using the constant `SLOTS_PER_EPOCH = 432,000` - no HTTP polling required.
+
+### Core Metrics
 
 | Metric | Type | Description |
 |--------|------|-------------|
+| `solana_epoch` | Gauge | Current epoch number (derived from root slot) |
+| `solana_slot_index` | Gauge | Current slot index within epoch (0-431999) |
 | `solana_vote_credits_expected_max` | Gauge | Max theoretical credits (slots × 16) |
 | `solana_vote_credits_actual` | Gauge | Actual credits earned this epoch |
 | `solana_vote_credits_projected_epoch` | Gauge | Projected total credits by epoch end |
 | `missed_vote_credits_current_epoch` | Gauge | Credits missed this epoch |
-| `missed_vote_credits_last_epoch` | Gauge | Credits missed last epoch |
-| `missed_vote_credits_since_last_poll` | Gauge | Delta since last poll |
 | `missed_vote_credits_5m` | Gauge | Credits missed (5 min window) |
 | `missed_vote_credits_1h` | Gauge | Credits missed (1 hour window) |
-| `missed_vote_credits_rate_5m` | Gauge | Miss rate per minute (5 min avg) |
-| `missed_vote_credits_rate_1h` | Gauge | Miss rate per minute (1 hour avg) |
 | `solana_vote_credits_efficiency_5m` | Gauge | Fraction of max credits earned (5 min) |
 | `solana_vote_credits_efficiency_1h` | Gauge | Fraction of max credits earned (1 hour) |
 | `solana_vote_credits_efficiency_epoch` | Gauge | Fraction of max credits earned (epoch) |
@@ -70,11 +70,10 @@ cargo build --release
 | `missed_vote_credits_total` | Counter | Cumulative missed credits |
 | `rpc_up` | Gauge | RPC status (1=up, 0=down) |
 | `rpc_errors` | Counter | Total RPC errors |
-| `rpc_last_success` | Gauge | Last successful RPC timestamp |
 
-### Per-Vote Histogram Metrics (WebSocket)
+### Per-Vote Histogram Metrics
 
-Real-time per-vote credit distribution via WebSocket subscription to the vote account.
+Real-time per-vote credit distribution from the vote account's `votes` array.
 
 | Metric | Labels | Description |
 |--------|--------|-------------|
@@ -194,28 +193,37 @@ groups:
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                        TVC Tracker                           │
-│  ┌────────────────┐  ┌────────────────┐  ┌────────────────┐  │
-│  │  REST Poller   │  │  WS Subscriber │  │    Metrics     │  │
-│  │  (aggregate)   │  │  (per-vote)    │  │    Registry    │  │
-│  └───────┬────────┘  └───────┬────────┘  └───────┬────────┘  │
-│          │                   │                   │           │
-│  ┌───────┴───────────────────┴───────────────────┴────────┐  │
-│  │            Axum HTTP Server (:7999/metrics)            │  │
-│  └────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────┘
-         │                   │                   ▲
-         ▼ HTTP              ▼ WebSocket         │
-   ┌───────────┐       ┌───────────┐     ┌──────┴──────┐
-   │ Solana RPC│       │ Solana RPC│     │ Prometheus  │
-   │  (REST)   │       │   (WS)    │     └─────────────┘
-   └───────────┘       └───────────┘
+┌───────────────────────────────────────────────────────────────┐
+│                        TVC Tracker                            │
+│  ┌────────────────────────────────────────────────────────┐   │
+│  │               WebSocket Subscriber                      │   │
+│  │  accountSubscribe(vote_pubkey, commitment=finalized)   │   │
+│  └─────────────────────────┬──────────────────────────────┘   │
+│                            │                                   │
+│  ┌─────────────────────────┴──────────────────────────────┐   │
+│  │                   Vote Tracker                          │   │
+│  │  - Per-vote histogram (0-16 credits)                   │   │
+│  │  - Epoch info from slot (SLOTS_PER_EPOCH = 432,000)    │   │
+│  │  - Time-windowed metrics (5m, 1h, epoch)               │   │
+│  │  - Missed credits from epoch_credits delta             │   │
+│  └─────────────────────────┬──────────────────────────────┘   │
+│                            │                                   │
+│  ┌─────────────────────────┴──────────────────────────────┐   │
+│  │            Axum HTTP Server (:7999/metrics)            │   │
+│  └────────────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────────┘
+                             │                   ▲
+                             ▼ WebSocket         │ HTTP
+                       ┌───────────┐     ┌──────┴──────┐
+                       │ Solana RPC│     │ Prometheus  │
+                       │   (WSS)   │     └─────────────┘
+                       └───────────┘
 ```
 
-**Data Flow:**
-- **REST Poller**: Fetches aggregate epoch credits at configurable intervals
-- **WS Subscriber**: Real-time vote account updates for per-vote histogram
+**Key Design:**
+- **WebSocket-only**: Single connection to RPC for real-time vote account updates
+- **No HTTP polling**: Epoch info derived from slot numbers (constant SLOTS_PER_EPOCH)
+- **Consistency**: Histogram, missed credits, and efficiency all from same data source
 
 ## Development
 
