@@ -210,7 +210,6 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
     // Get missed credits for each window
     let missed_5m = tracker.window_missed(300);
     let missed_1h = tracker.window_missed(3600);
-    let _missed_epoch = tracker.epoch_missed(); // Epoch data comes from HTTP poller
 
     // Update histogram count metrics
     for credits in 0..=16u64 {
@@ -263,20 +262,16 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
     metrics.missed_1h.set(missed_1h as i64);
     metrics.missed_current_epoch.set(missed_epoch as i64);
 
-    // Calculate totals and credits from histograms
+    // Calculate totals and credits from histograms (for 5m/1h windowed metrics)
     let total_votes_5m = VoteTracker::histogram_total(&hist_5m);
     let total_votes_1h = VoteTracker::histogram_total(&hist_1h);
-    let total_votes_epoch = VoteTracker::histogram_total(&hist_epoch);
 
     let hist_credits_5m = VoteTracker::histogram_credits(&hist_5m);
     let hist_credits_1h = VoteTracker::histogram_credits(&hist_1h);
-    let hist_credits_epoch = VoteTracker::histogram_credits(&hist_epoch);
 
-    // For efficiency: expected_credits = histogram_credits + missed_credits
-    // efficiency = histogram_credits / expected_credits
+    // For windowed efficiency: expected = credits + missed
     let expected_5m = hist_credits_5m + missed_5m;
     let expected_1h = hist_credits_1h + missed_1h;
-    let expected_epoch = hist_credits_epoch + missed_epoch;
 
     // Get epoch info for projections
     let epoch_info = tracker.epoch_info();
@@ -327,22 +322,7 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
         current_epoch_credits as i64 + (avg_credits_1h * remaining_slots as f64) as i64;
     metrics.projected_credits_1h.set(projected_1h);
 
-    // Epoch metrics (now from WebSocket, not HTTP)
-    if expected_epoch > 0 {
-        let eff_epoch = hist_credits_epoch as f64 / expected_epoch as f64;
-        let avg_credits_epoch = if total_votes_epoch > 0 {
-            hist_credits_epoch as f64 / total_votes_epoch as f64
-        } else {
-            0.0
-        };
-        metrics.vote_credits_efficiency_epoch.set(eff_epoch);
-        metrics.vote_credits_per_slot_epoch.set(avg_credits_epoch);
-        metrics
-            .vote_latency_slots_epoch
-            .set(17.0 - avg_credits_epoch);
-    }
-
-    // Set epoch info metrics
+    // Set epoch info metrics using vote account data (covers entire epoch)
     if let Some(epoch_info) = tracker.epoch_info() {
         metrics.epoch.set(epoch_info.epoch as i64);
         metrics.slot_index.set(epoch_info.slot_index as i64);
@@ -356,5 +336,17 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
         // Maximum possible credits at current slot = (slot_index + 1) × 16
         let epoch_max_at_slot = (epoch_info.slot_index + 1) * 16;
         metrics.epoch_expected_max.set(epoch_max_at_slot as i64);
+
+        // Epoch-level metrics from vote account data (covers entire epoch, not just since tracker started)
+        if epoch_max_at_slot > 0 {
+            let eff_epoch = current_epoch_credits as f64 / epoch_max_at_slot as f64;
+            let avg_credits_epoch =
+                current_epoch_credits as f64 / (epoch_info.slot_index + 1) as f64;
+            metrics.vote_credits_efficiency_epoch.set(eff_epoch);
+            metrics.vote_credits_per_slot_epoch.set(avg_credits_epoch);
+            metrics
+                .vote_latency_slots_epoch
+                .set(17.0 - avg_credits_epoch);
+        }
     }
 }
