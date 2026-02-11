@@ -10,21 +10,29 @@ pub const MAX_CREDITS_PER_SLOT: u64 = 16;
 #[derive(Clone)]
 pub struct Metrics {
     pub registry: Registry,
-    // Epoch info
+
+    // === Epoch Info ===
     pub epoch: IntGauge,
     pub slot_index: IntGauge,
-    // Credits
+
+    // === Credits (Current Epoch) ===
+    /// Total epoch credits from vote account (credits - previous_credits, matches `solana vote-account`)
+    pub total_epoch_credits: IntGauge,
     pub expected_max: IntGauge,
     pub actual: IntGauge,
-    /// Total epoch credits from vote account (matches `solana vote-account` output)
-    pub total_epoch_credits: IntGauge,
+    pub projected_credits_epoch: IntGauge,
+
+    // === Missed Credits ===
     pub missed_current_epoch: IntGauge,
     pub missed_last_epoch: IntGauge,
     pub missed_since_last_poll: IntGauge,
     pub missed_5m: IntGauge,
     pub missed_1h: IntGauge,
+    pub missed_total: IntCounter,
     pub missed_rate_5m: Gauge,
     pub missed_rate_1h: Gauge,
+
+    // === Performance Metrics ===
     pub vote_credits_efficiency_5m: Gauge,
     pub vote_credits_efficiency_1h: Gauge,
     pub vote_credits_efficiency_epoch: Gauge,
@@ -34,15 +42,17 @@ pub struct Metrics {
     pub vote_latency_slots_5m: Gauge,
     pub vote_latency_slots_1h: Gauge,
     pub vote_latency_slots_epoch: Gauge,
+
+    // === RPC Health ===
+    pub rpc_up: IntGauge,
+    pub rpc_errors: IntCounter,
+    pub rpc_last_success: IntGauge,
+
+    // === Histograms (detailed per-vote data) ===
     /// Histogram: vote count by credits earned (0-16) per window (5m, 1h, epoch)
     pub vote_credits_histogram_count: IntGaugeVec,
     /// Histogram: relative fraction by credits earned (0-16) per window
     pub vote_credits_histogram_fraction: GaugeVec,
-    pub missed_total: IntCounter,
-    pub projected_credits_epoch: IntGauge,
-    pub rpc_up: IntGauge,
-    pub rpc_errors: IntCounter,
-    pub rpc_last_success: IntGauge,
 }
 
 impl Metrics {
@@ -70,8 +80,8 @@ impl Metrics {
         ))?;
 
         let total_epoch_credits = IntGauge::with_opts(Opts::new(
-            "solana_vote_credits_total_epoch",
-            "Total vote credits this epoch from vote account (matches `solana vote-account` output)",
+            "solana_vote_credits_epoch",
+            "Vote credits earned this epoch from vote account (credits - previous_credits)",
         ))?;
 
         let missed_current_epoch = IntGauge::with_opts(Opts::new(
@@ -227,18 +237,24 @@ impl Metrics {
 
         Ok(Self {
             registry,
+            // Epoch info
             epoch,
             slot_index,
+            // Credits
+            total_epoch_credits,
             expected_max,
             actual,
-            total_epoch_credits,
+            projected_credits_epoch,
+            // Missed credits
             missed_current_epoch,
             missed_last_epoch,
             missed_since_last_poll,
             missed_5m,
             missed_1h,
+            missed_total,
             missed_rate_5m,
             missed_rate_1h,
+            // Performance
             vote_credits_efficiency_5m,
             vote_credits_efficiency_1h,
             vote_credits_efficiency_epoch,
@@ -248,13 +264,13 @@ impl Metrics {
             vote_latency_slots_5m,
             vote_latency_slots_1h,
             vote_latency_slots_epoch,
-            vote_credits_histogram_count,
-            vote_credits_histogram_fraction,
-            missed_total,
-            projected_credits_epoch,
+            // RPC health
             rpc_up,
             rpc_errors,
             rpc_last_success,
+            // Histograms (at bottom)
+            vote_credits_histogram_count,
+            vote_credits_histogram_fraction,
         })
     }
 
