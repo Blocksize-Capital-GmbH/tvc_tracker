@@ -228,4 +228,25 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
             .with_label_values(&["epoch", &credits_str])
             .set(frac_epoch[credits as usize]);
     }
+
+    // Update efficiency metrics from histogram (more accurate than epoch-level polling)
+    // Only update if we have data in the window
+    if VoteTracker::histogram_total(&hist_5m) > 0 {
+        let eff_5m = VoteTracker::histogram_efficiency(&hist_5m);
+        let avg_5m = VoteTracker::histogram_avg_credits(&hist_5m);
+        metrics.vote_credits_efficiency_5m.set(eff_5m);
+        metrics.vote_credits_per_slot_5m.set(avg_5m);
+        metrics.vote_latency_slots_5m.set(17.0 - avg_5m);
+    }
+
+    if VoteTracker::histogram_total(&hist_1h) > 0 {
+        let eff_1h = VoteTracker::histogram_efficiency(&hist_1h);
+        let avg_1h = VoteTracker::histogram_avg_credits(&hist_1h);
+        metrics.vote_credits_efficiency_1h.set(eff_1h);
+        metrics.vote_credits_per_slot_1h.set(avg_1h);
+        metrics.vote_latency_slots_1h.set(17.0 - avg_1h);
+    }
+
+    // Note: epoch metrics from histogram only reflect time since tracker started
+    // The HTTP poller provides full epoch data, so we don't override epoch metrics here
 }

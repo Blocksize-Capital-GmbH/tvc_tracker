@@ -21,6 +21,27 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  check-uncommitted:
+    name: Check for Uncommitted Changes
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Run fmt and clippy
+        run: |
+          cargo fmt --all
+          cargo clippy --fix --allow-dirty --allow-staged || true
+      - name: Check for uncommitted changes
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::Uncommitted changes detected after running fmt/clippy. Please run 'cargo fmt --all && cargo clippy --fix' and commit the changes."
+            git diff
+            exit 1
+          fi
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest

@@ -178,6 +178,36 @@ impl VoteTracker {
         }
         result
     }
+
+    /// Calculate efficiency from histogram (actual credits / max possible)
+    /// This is a more accurate per-vote efficiency than epoch-level totals
+    pub fn histogram_efficiency(hist: &[u64; 17]) -> f64 {
+        let total_votes = Self::histogram_total(hist);
+        if total_votes == 0 {
+            return 0.0;
+        }
+        let max_credits = total_votes * 16; // Max 16 credits per vote
+        let actual_credits: u64 = hist
+            .iter()
+            .enumerate()
+            .map(|(credits, count)| credits as u64 * count)
+            .sum();
+        actual_credits as f64 / max_credits as f64
+    }
+
+    /// Calculate average credits per vote from histogram
+    pub fn histogram_avg_credits(hist: &[u64; 17]) -> f64 {
+        let total_votes = Self::histogram_total(hist);
+        if total_votes == 0 {
+            return 0.0;
+        }
+        let total_credits: u64 = hist
+            .iter()
+            .enumerate()
+            .map(|(credits, count)| credits as u64 * count)
+            .sum();
+        total_credits as f64 / total_votes as f64
+    }
 }
 
 impl Default for VoteTracker {
