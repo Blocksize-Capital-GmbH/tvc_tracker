@@ -21,25 +21,40 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  check-uncommitted:
-    name: Check for Uncommitted Changes
+  auto-fix:
+    name: Auto-fix Formatting
     runs-on: ubuntu-latest
-    needs: [fmt, clippy]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Run fmt and clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-autofix-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run fmt and clippy fix
         run: |
           cargo fmt --all
           cargo clippy --fix --allow-dirty --allow-staged || true
-      - name: Check for uncommitted changes
+      - name: Commit changes if any
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           if [ -n "$(git status --porcelain)" ]; then
-            echo "::error::Uncommitted changes detected after running fmt/clippy. Please run 'cargo fmt --all && cargo clippy --fix' and commit the changes."
-            git diff
-            exit 1
+            git add -A
+            git commit -m "style: auto-fix formatting and linting"
+            git push
+          else
+            echo "No changes to commit"
           fi
 
   clippy:
