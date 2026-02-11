@@ -149,28 +149,36 @@ async fn process_notification(
         .map(|v| (v.slot, v.confirmation_count, v.latency))
         .collect();
 
-    // Get current epoch from epochCredits
-    let current_epoch = vote_info
-        .epoch_credits
-        .last()
-        .map(|ec| ec.epoch)
+    // Get current epoch info from epochCredits
+    let current_epoch_entry = vote_info.epoch_credits.last();
+    let current_epoch = current_epoch_entry.map(|ec| ec.epoch).unwrap_or(0);
+
+    // Get credits earned THIS epoch (credits - previous_credits)
+    let epoch_credits = current_epoch_entry
+        .map(|ec| ec.credits.saturating_sub(ec.previous_credits))
         .unwrap_or(0);
 
     // Process the update
     let result = {
         let mut tracker = tracker.write().await;
-        tracker.process_update(context_slot, &votes, vote_info.root_slot, current_epoch)
+        tracker.process_update(
+            context_slot,
+            &votes,
+            vote_info.root_slot,
+            current_epoch,
+            epoch_credits,
+        )
     };
 
     // Update metrics
     update_histogram_metrics(metrics, tracker).await;
 
-    if result.new_votes > 0 || result.missed_count > 0 {
+    if result.new_votes > 0 || result.missed_credits > 0 {
         tracing::debug!(
-            "Processed update at slot {}: {} new votes, {} missed",
+            "Processed update at slot {}: {} new votes, {} missed credits",
             context_slot,
             result.new_votes,
-            result.missed_count
+            result.missed_credits
         );
     }
 
@@ -185,7 +193,12 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
     let hist_1h = tracker.window_histogram(3600);
     let hist_epoch = tracker.epoch_histogram();
 
-    // Update count metrics
+    // Get missed credits for each window
+    let missed_5m = tracker.window_missed(300);
+    let missed_1h = tracker.window_missed(3600);
+    let _missed_epoch = tracker.epoch_missed(); // Epoch data comes from HTTP poller
+
+    // Update histogram count metrics
     for credits in 0..=16u64 {
         let credits_str = credits.to_string();
 
@@ -205,7 +218,7 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
             .set(hist_epoch[credits as usize] as i64);
     }
 
-    // Update fraction metrics
+    // Update histogram fraction metrics
     let frac_5m = VoteTracker::histogram_fractions(&hist_5m);
     let frac_1h = VoteTracker::histogram_fractions(&hist_1h);
     let frac_epoch = VoteTracker::histogram_fractions(&hist_epoch);
@@ -229,55 +242,46 @@ async fn update_histogram_metrics(metrics: &Arc<Metrics>, tracker: &Arc<RwLock<V
             .set(frac_epoch[credits as usize]);
     }
 
-    // Update efficiency and missed credits from slot-aware tracking
-    // This provides consistency between histogram and missed_vote_credits metrics
-    let (slots_5m, votes_5m, credits_5m) = tracker.window_stats(300);
-    let (slots_1h, votes_1h, credits_1h) = tracker.window_stats(3600);
+    // Update missed_vote_credits from WebSocket tracking
+    // This uses epoch_credits as source of truth for consistency
+    metrics.missed_5m.set(missed_5m as i64);
+    metrics.missed_1h.set(missed_1h as i64);
 
-    if slots_5m > 0 {
-        let expected_5m = slots_5m * 16;
-        let missed_5m = expected_5m.saturating_sub(credits_5m);
-        let efficiency_5m = credits_5m as f64 / expected_5m as f64;
-        let avg_credits_5m = if votes_5m > 0 {
-            credits_5m as f64 / votes_5m as f64
+    // Calculate efficiency: (total_slots * 16 - missed) / (total_slots * 16)
+    // Total votes = histogram total, expected_credits = total_votes * 16
+    let total_votes_5m = VoteTracker::histogram_total(&hist_5m);
+    let total_votes_1h = VoteTracker::histogram_total(&hist_1h);
+
+    // For efficiency, we need expected_max which includes missed slots
+    // expected_credits = histogram_credits + missed_credits
+    // efficiency = histogram_credits / expected_credits
+    let hist_credits_5m = VoteTracker::histogram_credits(&hist_5m);
+    let hist_credits_1h = VoteTracker::histogram_credits(&hist_1h);
+
+    let expected_5m = hist_credits_5m + missed_5m;
+    let expected_1h = hist_credits_1h + missed_1h;
+
+    if expected_5m > 0 {
+        let eff_5m = hist_credits_5m as f64 / expected_5m as f64;
+        let avg_credits_5m = if total_votes_5m > 0 {
+            hist_credits_5m as f64 / total_votes_5m as f64
         } else {
             0.0
         };
-
-        metrics.missed_5m.set(missed_5m as i64);
-        metrics.vote_credits_efficiency_5m.set(efficiency_5m);
+        metrics.vote_credits_efficiency_5m.set(eff_5m);
         metrics.vote_credits_per_slot_5m.set(avg_credits_5m);
         metrics.vote_latency_slots_5m.set(17.0 - avg_credits_5m);
-
-        // Calculate rate per minute
-        let minutes_5m = 5.0f64.min(slots_5m as f64 / 150.0); // ~150 slots/min
-        if minutes_5m > 0.0 {
-            metrics.missed_rate_5m.set(missed_5m as f64 / minutes_5m);
-        }
     }
 
-    if slots_1h > 0 {
-        let expected_1h = slots_1h * 16;
-        let missed_1h = expected_1h.saturating_sub(credits_1h);
-        let efficiency_1h = credits_1h as f64 / expected_1h as f64;
-        let avg_credits_1h = if votes_1h > 0 {
-            credits_1h as f64 / votes_1h as f64
+    if expected_1h > 0 {
+        let eff_1h = hist_credits_1h as f64 / expected_1h as f64;
+        let avg_credits_1h = if total_votes_1h > 0 {
+            hist_credits_1h as f64 / total_votes_1h as f64
         } else {
             0.0
         };
-
-        metrics.missed_1h.set(missed_1h as i64);
-        metrics.vote_credits_efficiency_1h.set(efficiency_1h);
+        metrics.vote_credits_efficiency_1h.set(eff_1h);
         metrics.vote_credits_per_slot_1h.set(avg_credits_1h);
         metrics.vote_latency_slots_1h.set(17.0 - avg_credits_1h);
-
-        // Calculate rate per minute
-        let minutes_1h = 60.0f64.min(slots_1h as f64 / 150.0);
-        if minutes_1h > 0.0 {
-            metrics.missed_rate_1h.set(missed_1h as f64 / minutes_1h);
-        }
     }
-
-    // Note: epoch metrics from histogram only reflect time since tracker started
-    // The HTTP poller provides full epoch data, so we don't override epoch metrics here
 }
