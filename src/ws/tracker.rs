@@ -8,7 +8,7 @@ pub const SLOTS_PER_EPOCH: u64 = 432_000;
 pub const MAX_CREDITS_PER_SLOT: u64 = 16;
 
 /// Histogram entry: (timestamp, credits_bucket_counts, missed_credits_cumulative)
-/// credits_bucket_counts[i] = count of votes that earned i credits (0..=16)
+/// credits_bucket_counts\[i\] = count of votes that earned i credits (0..=16)
 type HistEntry = (Instant, [u64; 17], u64);
 
 /// Calculate epoch info from a slot number
@@ -62,7 +62,7 @@ pub struct VoteTracker {
     prev_root_slot: Option<u64>,
     /// Previous epoch credits value (for delta calculation)
     prev_epoch_credits: Option<u64>,
-    /// Histogram of credits earned this epoch: counts[i] = votes earning i credits
+    /// Histogram of credits earned this epoch: counts\[i\] = votes earning i credits
     epoch_histogram: [u64; 17],
     /// Current epoch info (derived from slot)
     epoch_info: Option<EpochInfo>,
@@ -1042,7 +1042,7 @@ mod tests {
                 epoch_start + i,
                 &votes,
                 Some(root),
-                credits_delta as u64,
+                credits_delta,
                 Some(1), // epoch 1
             );
         }
