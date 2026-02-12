@@ -19,6 +19,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 time = ">=0.3.47"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# rustls with ring crypto backend (required for TLS)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-appender = "0.2"
