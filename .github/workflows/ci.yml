@@ -126,8 +126,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/audit@v1
-        with:
-          ignore: RUSTSEC-2023-0071  # Allow known acceptable advisories
 
   coverage:
     name: Code Coverage

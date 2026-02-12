@@ -108,7 +108,7 @@ jobs:
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          
+
           # Generate changelog from recent commits
           echo "## What's Changed" > CHANGELOG.md
           echo "" >> CHANGELOG.md
