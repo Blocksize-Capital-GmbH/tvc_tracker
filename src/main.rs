@@ -8,11 +8,13 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     args.validate()?;
-    println!("tvc_tracker starting with args:\n{:#?}", args);
+    println!("tvc_tracker v{VERSION} starting with args:\n{:#?}", args);
 
     let metrics = Arc::new(tvc_tracker::metrics::Metrics::new()?);
     let _log_guard = init_logging(&args.log_dir)?;

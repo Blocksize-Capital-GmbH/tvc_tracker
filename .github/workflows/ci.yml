@@ -105,8 +105,10 @@ jobs:
           key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
       - name: Build release binary
         run: cargo build --release
-      - name: Verify binary runs
-        run: ./target/release/tvc_tracker --help
+      - name: Verify binary version
+        run: |
+          ./target/release/tvc_tracker --version
+          ./target/release/tvc_tracker --help
 
   doc:
     name: Documentation
