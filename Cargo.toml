@@ -1,8 +1,8 @@
 [package]
 name = "tvc_tracker"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2024"
-authors = ["Blocksize Capital <dev@blocksize-capital.com>"]
+authors = ["Axel Lode <al@blocksize-capital.com>"]
 description = "A Prometheus exporter for monitoring Solana validator Timely Vote Credits (TVC)"
 license = "MIT"
 repository = "https://github.com/Blocksize-Capital-GmbH/tvc_tracker"
@@ -11,20 +11,18 @@ categories = ["command-line-utilities", "development-tools::profiling"]
 
 [dependencies]
 anyhow = "1"
+axum = "0.7"
 clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
+prometheus = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+time = ">=0.3.47"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
-tokio-tungstenite = "0.24"
-futures-util = "0.3"
-axum = "0.7"
-prometheus = { version = "0.13", default-features = false }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 tracing-appender = "0.2"
-# Pin time to version compatible with Rust 1.85 (0.3.46+ requires 1.88)
-time = ">=0.3.37, <0.3.46"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
