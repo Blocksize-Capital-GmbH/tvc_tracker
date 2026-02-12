@@ -1,7 +1,7 @@
 # ===============================
 # Stage 1: Chef (dependency caching)
 # ===============================
-FROM --platform=$BUILDPLATFORM rust:1.85-bookworm AS chef
+FROM --platform=$BUILDPLATFORM rust:1.93-bookworm AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
