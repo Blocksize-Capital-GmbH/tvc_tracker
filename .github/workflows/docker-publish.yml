@@ -25,6 +25,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        if: github.event_name != 'pull_request'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -50,13 +54,29 @@ jobs:
             type=sha,prefix=
             type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
 
-      - name: Build and push Docker image
-        id: push
-        uses: docker/build-push-action@v5
+      # PR builds: amd64 only (fast, ~3 min)
+      - name: Build Docker image (PR - amd64 only)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+
+      # Main/tag builds: multi-platform with cross-compilation
+      - name: Build and push Docker image (main/tags)
+        if: github.event_name != 'pull_request'
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -71,7 +91,7 @@ jobs:
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
 
-  # Optional: Run tests on the built image
+  # Test the built image on PRs
   test-image:
     name: Test Docker Image
     needs: build-and-push
@@ -88,4 +108,4 @@ jobs:
         run: docker run --rm test-image --help
 
       - name: Test version output
-        run: docker run --rm test-image --version || true
+        run: docker run --rm test-image --version

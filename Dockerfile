@@ -1,29 +1,57 @@
 # ===============================
-# Stage 1: Build
+# Stage 1: Chef (dependency caching)
 # ===============================
-FROM rust:1.85-bookworm AS builder
-
+FROM --platform=$BUILDPLATFORM rust:1.85-bookworm AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /app
 
-# Copy manifests first for layer caching
+# ===============================
+# Stage 2: Planner (analyze dependencies)
+# ===============================
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
-
-# Create a dummy project to cache dependencies
-RUN mkdir src && \
-    echo "fn main() { println!(\"placeholder\"); }" > src/main.rs
-
-# Build dependencies only (this layer is cached if Cargo.toml/Cargo.lock don't change)
-RUN cargo build --release && \
-    rm -rf src target/release/deps/tvc_tracker* target/release/tvc_tracker*
-
-# Copy actual source code
 COPY src ./src
-
-# Build the real application
-RUN cargo build --release
+RUN cargo chef prepare --recipe-path recipe.json
 
 # ===============================
-# Stage 2: Runtime
+# Stage 3: Builder (compile with cached dependencies)
+# ===============================
+FROM chef AS builder
+
+ARG TARGETPLATFORM
+
+# Install cross-compilation tools for ARM64
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        apt-get update && \
+        apt-get install -y gcc-aarch64-linux-gnu && \
+        rustup target add aarch64-unknown-linux-gnu; \
+    fi
+
+COPY --from=planner /app/recipe.json recipe.json
+
+# Build dependencies (this layer is heavily cached)
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+        cargo chef cook --release --target aarch64-unknown-linux-gnu --recipe-path recipe.json; \
+    else \
+        cargo chef cook --release --recipe-path recipe.json; \
+    fi
+
+# Copy source and build
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+        cargo build --release --target aarch64-unknown-linux-gnu && \
+        cp target/aarch64-unknown-linux-gnu/release/tvc_tracker /app/tvc_tracker; \
+    else \
+        cargo build --release && \
+        cp target/release/tvc_tracker /app/tvc_tracker; \
+    fi
+
+# ===============================
+# Stage 4: Runtime
 # ===============================
 FROM debian:bookworm-slim AS runtime
 
@@ -38,7 +66,7 @@ RUN useradd -m -u 1000 -s /bin/bash appuser
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/target/release/tvc_tracker /app/tvc_tracker
+COPY --from=builder /app/tvc_tracker /app/tvc_tracker
 
 # Create logs directory
 RUN mkdir -p /app/logs && chown -R appuser:appuser /app
